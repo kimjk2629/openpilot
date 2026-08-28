@@ -1,6 +1,7 @@
 import numpy as np
 from opendbc.can import CANPacker
 from opendbc.car import Bus, apply_steer_angle_limits_vm, structs
+from opendbc.car.carlog import carlog
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.tesla.teslacan import TeslaCAN
 from opendbc.car.tesla.values import CarControllerParams, TeslaFlags
@@ -69,6 +70,15 @@ class CarController(CarControllerBase):
         set_speed_kph = None  # TODO: pass from params when available
         can_sends.append(self.tesla_can.create_longitudinal_command(state, accel, cntr, CS.out.vEgo, CC.longActive,
                                                                     CS.cruise_override, set_speed_kph=set_speed_kph))
+
+        # TEMP DIAGNOSTIC: log what we're actually sending, ~2x/sec.
+        # Remove once the Alpha Longitudinal cruise-button issue is root-caused.
+        if self.frame % 50 == 0:
+          carlog.error(
+            "TESLA_DIAG_TX DAS_accState=%s accel=%.2f longActive=%s cruiseControl.cancel=%s "
+            "das_accCancel=%s cntr=%s" % (
+              state, accel, CC.longActive, CC.cruiseControl.cancel, CS.das_accCancel, cntr,
+            ))
     else:
       # Increment counter so cancel is prioritized even without openpilot longitudinal
       if CC.cruiseControl.cancel:
