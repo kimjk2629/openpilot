@@ -31,6 +31,11 @@ class CarState(CarStateBase):
     self.coop_steering = True
     self.infotainment_3_finger_press = 0
 
+    # TEMP DIAGNOSTIC: remove once the Alpha Longitudinal cruise-button issue is root-caused.
+    self.diag_frame = 0
+    self.diag_cruise_state_last = None
+    self.diag_acc_state_last = None
+
   def update_summon_state(self, summon_state: str, cruise_enabled: bool):
     summon_now = summon_state in ("ACTIVE", "COMPLETE", "SELFPARK_STARTED")
     if summon_now and not self.summon_prev and not self.cruise_enabled_prev:
@@ -154,6 +159,21 @@ class CarState(CarStateBase):
     acc_cancel = 1 if self.das_accCancel else 0
     ret.buttonEvents = [*create_button_events(acc_cancel, self.acc_cancel_last, {1: ButtonType.cancel})]
     self.acc_cancel_last = acc_cancel
+
+    # TEMP DIAGNOSTIC: log cruise/DAS state ~2x/sec, and immediately on any change.
+    # Remove once the Alpha Longitudinal cruise-button issue is root-caused.
+    self.diag_frame += 1
+    acc_state_raw = int(acc_state)
+    changed = cruise_state != self.diag_cruise_state_last or acc_state_raw != self.diag_acc_state_last
+    if changed or self.diag_frame % 50 == 0:
+      carlog.error(
+        "TESLA_DIAG cruise_state=%s DAS_accState=%s das_accCancel=%s cruise_enabled=%s "
+        "openpilotLongCtrl=%s vEgo=%.1f" % (
+          cruise_state, acc_state_raw, self.das_accCancel, cruise_enabled,
+          self.CP.openpilotLongitudinalControl, ret.vEgoRaw,
+        ))
+      self.diag_cruise_state_last = cruise_state
+      self.diag_acc_state_last = acc_state_raw
 
     # DAS_fusedSpeedLimit from DBC is always in kph (scale=5). Do NOT apply ui_is_kph conversion.
     speed_limit = cp_ap_party.vl["DAS_status"]["DAS_fusedSpeedLimit"]
