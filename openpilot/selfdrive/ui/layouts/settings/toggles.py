@@ -32,6 +32,10 @@ DESCRIPTIONS = {
     "without a turn signal activated while driving over 31 mph (50 km/h)."
   ),
   "AlwaysOnDM": tr_noop("Enable driver monitoring even when sunnypilot is not engaged."),
+  "DisableDM": tr_noop(
+    "Turn off the driver monitoring camera and its attention alerts entirely. sunnypilot will no longer watch the driver facing camera, " +
+    "so use this only if you understand the safety tradeoff."
+  ),
   'RecordFront': tr_noop("Upload data from the driver facing camera and help improve the driver monitoring algorithm."),
   "IsMetric": tr_noop("Display speed in km/h instead of mph."),
   "RecordAudio": tr_noop("Record and store microphone audio while driving. The audio will be included in the dashcam video in comma connect."),
@@ -75,6 +79,12 @@ class TogglesLayout(Widget):
         DESCRIPTIONS["AlwaysOnDM"],
         "monitoring.png",
         False,
+      ),
+      "DisableDM": (
+        lambda: tr("Disable Driver Monitoring"),
+        DESCRIPTIONS["DisableDM"],
+        "monitoring.png",
+        True,
       ),
       "RecordFront": (
         lambda: tr("Record and Upload Driver Camera"),
