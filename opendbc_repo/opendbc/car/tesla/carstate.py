@@ -31,6 +31,7 @@ class CarState(CarStateBase):
     self.cruise_override = False
     self.coop_steering = True
     self.infotainment_3_finger_press = 0
+    self.hands_on_high_frames = 0
 
   def update_summon_state(self, summon_state: str, cruise_enabled: bool):
     summon_now = summon_state in ("ACTIVE", "COMPLETE", "SELFPARK_STARTED")
@@ -115,7 +116,20 @@ class CarState(CarStateBase):
 
     # FSD disengages on strong user override (handsOnLevel >= 3) or high angle rate faults (fast override, high speed)
     eac_error_code = self.can_define.dv["EPAS3S_sysStatus"]["EPAS3S_eacErrorCode"].get(int(epas_status["EPAS3S_eacErrorCode"]), None)
-    self.steering_disengage = (self.hands_on_level >= 3 or (eac_status == "EAC_INHIBITED" and
+
+    # Debounce raw handsOnLevel>=3: a fast/large-angle turn (e.g. an intersection left/right
+    # turn) can briefly spike EPAS3S_handsOnLevel to 3 from steering-column inertia alone,
+    # with no driver hand actually on the wheel and no EPS fault raised. Un-debounced, a
+    # single glitched frame caused an instant, silent lat_active drop mid-turn (no fault
+    # flag set, so no dashboard alert). Require a few consecutive frames, matching the
+    # debounce already used for steeringPressed above, before treating it as a real override.
+    if self.hands_on_level >= 3:
+      self.hands_on_high_frames = min(self.hands_on_high_frames + 1, 100)
+    else:
+      self.hands_on_high_frames = 0
+    hands_on_override = self.hands_on_high_frames >= 5
+
+    self.steering_disengage = (hands_on_override or (eac_status == "EAC_INHIBITED" and
                                                            eac_error_code == "EAC_ERROR_HIGH_ANGLE_RATE_SAFETY")
                                 or abs(ret.steeringTorque) > STEER_DISENGAGE_THRESHOLD)
 
