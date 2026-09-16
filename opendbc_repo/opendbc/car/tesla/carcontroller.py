@@ -21,7 +21,7 @@ class CarController(CarControllerBase):
     self.apply_angle_last = 0
     self.packer = CANPacker(dbc_names[Bus.party])
     self.tesla_can = TeslaCAN(CP, self.packer)
-    self.coop_steering = True
+    self.coop_steering = not bool(CP.flags & TeslaFlags.DISABLE_COOP_STEERING)
     self.coop_steer = CoopSteeringCarController()
 
     # Vehicle model used for lateral limiting
@@ -40,7 +40,7 @@ class CarController(CarControllerBase):
     # Tesla EPS enforces disabling steering on heavy lateral override force.
     # When enabling in a tight curve, we wait until user reduces steering force to start steering.
     # Canceling is done on rising edge and is handled generically with CC.cruiseControl.cancel
-    lat_active = CC.latActive and CS.hands_on_level < 3
+    lat_active = CC.latActive and not CS.steering_disengage
 
     if self.frame % CarControllerParams.STEER_STEP == 0:
       # Angular rate limit based on speed
@@ -101,6 +101,8 @@ class CarController(CarControllerBase):
     # TODO: HUD control
     new_actuators = actuators.as_builder()
     new_actuators.steeringAngleDeg = self.apply_angle_last
+    new_actuators.accel = self.coop_steer.coop_apply_angle_last_sat  # debug
+    new_actuators.curvature = float(self.coop_steer.override_angle_accu)  # debug
 
     self.frame += 1
     return new_actuators, can_sends

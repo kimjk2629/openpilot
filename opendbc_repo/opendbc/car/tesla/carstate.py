@@ -4,7 +4,8 @@ from opendbc.car import Bus, create_button_events, structs
 from opendbc.car.carlog import carlog
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
-from opendbc.car.tesla.values import DBC, CANBUS, GEAR_MAP, STEER_THRESHOLD, TeslaFlags
+from opendbc.car.tesla.teslacan import get_steer_ctrl_type
+from opendbc.car.tesla.values import DBC, CANBUS, GEAR_MAP, STEER_THRESHOLD, STEER_DISENGAGE_THRESHOLD, TeslaFlags
 
 ButtonType = structs.CarState.ButtonEvent.Type
 
@@ -114,8 +115,9 @@ class CarState(CarStateBase):
 
     # FSD disengages on strong user override (handsOnLevel >= 3) or high angle rate faults (fast override, high speed)
     eac_error_code = self.can_define.dv["EPAS3S_sysStatus"]["EPAS3S_eacErrorCode"].get(int(epas_status["EPAS3S_eacErrorCode"]), None)
-    self.steering_disengage = self.hands_on_level >= 3 or (eac_status == "EAC_INHIBITED" and
+    self.steering_disengage = (self.hands_on_level >= 3 or (eac_status == "EAC_INHIBITED" and
                                                            eac_error_code == "EAC_ERROR_HIGH_ANGLE_RATE_SAFETY")
+                                or abs(ret.steeringTorque) > STEER_DISENGAGE_THRESHOLD)
 
     # Cruise state
     cruise_state = self.can_define.dv["DI_state"]["DI_cruiseState"].get(int(cp_party.vl["DI_state"]["DI_cruiseState"]), None)
@@ -195,6 +197,11 @@ class CarState(CarStateBase):
 
     # LKAS
     # On FSD 14+, ANGLE_CONTROL behavior changed to allow user winddown while actuating.
+    # FSD switched from using ANGLE_CONTROL to LANE_KEEP_ASSIST to likely keep the old steering override disengage logic.
+    # LKAS switched from LANE_KEEP_ASSIST to ANGLE_CONTROL to likely allow overriding LKAS events smoothly
+    lkas_ctrl_type = get_steer_ctrl_type(self.CP.flags, 2)
+    ret.stockLkas = cp_ap_party.vl["DAS_steeringControl"]["DAS_steeringControlType"] == lkas_ctrl_type  # LANE_KEEP_ASSIST
+
     # Stock Autosteer should be off (includes FSD)
     # TODO: find for TESLA_MODEL_X and HW2.5 vehicles
     if not (self.CP.flags & TeslaFlags.MISSING_DAS_SETTINGS):
@@ -240,9 +247,14 @@ class CarState(CarStateBase):
       cp_adas = can_parsers[Bus.adas]
       prev_infotainment = self.infotainment_3_finger_press
       self.infotainment_3_finger_press = int(cp_adas.vl["UI_status2"]["UI_activeTouchPoints"])
+      finger_count = 3
+      if self.CP.flags & TeslaFlags.MADS_SCREEN_BUTTON_4_FINGER:
+        finger_count = 4
+      elif self.CP.flags & TeslaFlags.MADS_SCREEN_BUTTON_5_FINGER:
+        finger_count = 5
       ret.buttonEvents = [*ret.buttonEvents, *create_button_events(
         self.infotainment_3_finger_press, prev_infotainment,
-        {3: ButtonType.lkas})]
+        {finger_count: ButtonType.lkas})]
 
     return ret
 

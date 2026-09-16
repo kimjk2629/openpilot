@@ -83,10 +83,13 @@ FSD_14_FW = {
   CAR.TESLA_MODEL_3: [
     b'TeMYG4_Main_0.0.0 (77),E4HP015.04.5',
     b'TeMYG4_Main_0.0.0 (78),E4HP015.05.0',
+    b'TeMYG4_Main_0.0.0 (77),E4H015.04.5',
+    b'TeMYG4_Main_0.0.0 (78),E4H015.05.0',
   ],
   CAR.TESLA_MODEL_Y: [
     b'TeMYG4_Legacy3Y_0.0.0 (6),Y4003.04.0',
     b'TeMYG4_Main_0.0.0 (77),Y4003.05.4',
+    b'TeMYG4_Main_0.0.0 (78),Y4003.06.0',
   ]
 }
 
@@ -148,11 +151,15 @@ class TeslaFlags(IntFlag):
   MISSING_DAS_SETTINGS = 4
   HAS_VEHICLE_BUS = 8
   HAS_DAS_BODY_CONTROLS = 16
+  MADS_SCREEN_BUTTON_4_FINGER = 32  # use a 4-finger screen press instead of 3-finger to toggle MADS
+  MADS_SCREEN_BUTTON_5_FINGER = 64  # use a 5-finger screen press instead of 3-finger to toggle MADS
+  DISABLE_COOP_STEERING = 128  # opt a car out of cooperative (hands-on override) steering
 
 
 DBC = CAR.create_dbc_map()
 
 STEER_THRESHOLD = 1
+STEER_DISENGAGE_THRESHOLD = 5.0  # Nm, hard override disengage regardless of hands_on_level
 
 if __name__ == "__main__":
   cars = []
