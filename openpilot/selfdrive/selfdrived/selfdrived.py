@@ -94,6 +94,11 @@ class SelfdriveD(CruiseHelper):
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
     ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan'] + ['modelDataV2SP', 'longitudinalPlanSP']
+    # dmonitoringd doesn't run at all when DisableDM is set (see process_config.py's enable_dm),
+    # so this message never publishes in that case. Ignore its liveness unconditionally rather
+    # than only when disabled, so a stale/missing DM heartbeat never raises a generic commIssue
+    # and blocks engagement outright; the actual DM alerts/lockout below are separately gated.
+    ignore += ['driverMonitoringState']
     if SIMULATION:
       ignore += ['driverCameraState', 'managerState']
     if REPLAY:
@@ -224,7 +229,7 @@ class SelfdriveD(CruiseHelper):
       self.events.add(EventName.resumeBlocked)
 
     # Handle DM
-    if not self.CP.notCar:
+    if not self.CP.notCar and not self.params.get_bool("DisableDM"):
       # Block engaging until lockout times out or ignition reset
       if self.sm['driverMonitoringState'].lockout and not self.dm_lockout_set:
         self.params.put_bool("DriverTooDistracted", True)
