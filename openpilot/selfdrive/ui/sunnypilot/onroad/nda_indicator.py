@@ -25,7 +25,9 @@ class NdaIndicatorRenderer(Widget):
     super().__init__()
     self.params = Params()
     self.font_bold = gui_app.font(FontWeight.BOLD)
-    self.enabled = False
+    # NOTE: named camera_enabled (not "enabled") - Widget already defines a read-only
+    # "enabled" property with no setter, and shadowing it crashes on assignment.
+    self.camera_enabled = False
     self.connected = False
     self.active = False
     self._frame = 0
@@ -33,14 +35,13 @@ class NdaIndicatorRenderer(Widget):
   def update(self) -> None:
     self._frame += 1
     if self._frame % PARAMS_CHECK_INTERVAL_FRAMES == 0:
-      self.enabled = self.params.get_bool("EnableCameraSpeedLimit")
-
-    self.connected = self.params.get_bool("CameraSpeedLimitConnected") if self.enabled else False
+      self.camera_enabled = self.params.get_bool("EnableCameraSpeedLimit")
+    self.connected = self.params.get_bool("CameraSpeedLimitConnected") if self.camera_enabled else False
     self.active = self.params.get_bool("CameraSpeedLimitActive") if self.connected else False
 
   @property
   def visible(self) -> bool:
-    return self.enabled and self.connected
+    return self.camera_enabled and self.connected
 
   @property
   def height(self) -> float:
@@ -49,18 +50,14 @@ class NdaIndicatorRenderer(Widget):
   def _render(self, rect: rl.Rectangle) -> None:
     if not self.visible:
       return
-
     text = "NDA"
     text_size = measure_text_cached(self.font_bold, text, 34)
     badge_width = text_size.x + 36
-
     fill_color = COLOR_ACTIVE_FILL if self.active else COLOR_IDLE_FILL
     border_color = COLOR_ACTIVE_BORDER if self.active else COLOR_IDLE_BORDER
-
     badge_rect = rl.Rectangle(rect.x + rect.width / 2 - badge_width / 2, rect.y - 4, badge_width, NDA_BADGE_HEIGHT)
     rl.draw_rectangle_rounded(badge_rect, 0.3, 10, fill_color)
     rl.draw_rectangle_rounded_lines_ex(badge_rect, 0.3, 10, 2, border_color)
-
     origin = rl.Vector2(badge_rect.x + badge_rect.width / 2 - text_size.x / 2,
                          badge_rect.y + badge_rect.height / 2 - text_size.y / 2)
     rl.draw_text_ex(self.font_bold, text, origin, 34, 0, rl.Color(255, 255, 255, 230))
