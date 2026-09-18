@@ -19,6 +19,8 @@ class TogglesLayoutMici(NavScroller):
     ldw_toggle = BigParamControl("lane departure warnings", "IsLdwEnabled")
     always_on_dm_toggle = BigParamControl("always-on driver monitor", "AlwaysOnDM")
     disable_dm_toggle = BigParamControl("disable driver monitoring", "DisableDM", toggle_callback=restart_needed_callback)
+    camera_speed_limit_toggle = BigParamControl("speed camera alerts (wifi)", "EnableCameraSpeedLimit", toggle_callback=restart_needed_callback)
+    sync_set_speed_toggle = BigParamControl("sync set speed on accelerator", "SyncSetSpeedWhileGas", toggle_callback=restart_needed_callback)
     record_front = BigParamControl("record & upload driver camera", "RecordFront", toggle_callback=restart_needed_callback)
     record_mic = BigParamControl("record & upload mic audio", "RecordAudio", toggle_callback=restart_needed_callback)
     enable_openpilot = BigParamControl("enable sunnypilot", "OpenpilotEnabledToggle", toggle_callback=restart_needed_callback)
@@ -30,6 +32,8 @@ class TogglesLayoutMici(NavScroller):
       ldw_toggle,
       always_on_dm_toggle,
       disable_dm_toggle,
+      camera_speed_limit_toggle,
+      sync_set_speed_toggle,
       record_front,
       record_mic,
       enable_openpilot,
@@ -42,6 +46,8 @@ class TogglesLayoutMici(NavScroller):
       ("IsLdwEnabled", ldw_toggle),
       ("AlwaysOnDM", always_on_dm_toggle),
       ("DisableDM", disable_dm_toggle),
+      ("EnableCameraSpeedLimit", camera_speed_limit_toggle),
+      ("SyncSetSpeedWhileGas", sync_set_speed_toggle),
       ("RecordFront", record_front),
       ("RecordAudio", record_mic),
       ("OpenpilotEnabledToggle", enable_openpilot),
