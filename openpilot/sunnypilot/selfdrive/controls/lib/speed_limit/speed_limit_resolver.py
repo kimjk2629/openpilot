@@ -67,6 +67,7 @@ class SpeedLimitResolver:
       self.params
     )
     self.offset_value = self.params.get("SpeedLimitValueOffset", return_default=True)
+    self.camera_enabled = self.params.get_bool("EnableCameraSpeedLimit")
 
     self.speed_limit = 0.
     self.speed_limit_last = 0.
@@ -95,6 +96,28 @@ class SpeedLimitResolver:
       self.is_metric = self.params.get_bool("IsMetric")
       self.offset_type = self.params.get("SpeedLimitOffsetType", return_default=True)
       self.offset_value = self.params.get("SpeedLimitValueOffset", return_default=True)
+      self.camera_enabled = self.params.get_bool("EnableCameraSpeedLimit")
+
+  def _apply_camera_override(self) -> None:
+    """Let the WiFi speed-camera bridge (navi_camera_bridge.py) take over as the speed limit
+    source while a camera/section alert is active, but never let it raise the target above
+    whatever the car/map sources already resolved - it can only make the limit more restrictive."""
+    if not getattr(self, "camera_enabled", False):
+      return
+    if not self.params.get_bool("CameraSpeedLimitActive"):
+      return
+
+    camera_limit = self.params.get("CameraSpeedLimit", return_default=True)
+    if camera_limit <= 0.:
+      return
+
+    if self.speed_limit <= 0. or camera_limit < self.speed_limit:
+      self.speed_limit = camera_limit
+      self.distance = self.params.get("CameraSpeedLimitDistance", return_default=True)
+      # There's no dedicated enum value for a WiFi camera-broadcast source yet, so this reuses
+      # "map" - downstream consumers (Speed Limit Assist, UI) just treat it like any other
+      # map-based limit, which is the behavior we want here.
+      self.source = SpeedLimitSource.map
 
   def _get_speed_limit_offset(self) -> float:
     if self.offset_type == OffsetType.off:
@@ -183,6 +206,7 @@ class SpeedLimitResolver:
     self.update_params()
 
     self.speed_limit, self.distance, self.source = self._resolve_limit_sources(sm)
+    self._apply_camera_override()
     self.speed_limit_offset = self._get_speed_limit_offset()
 
     self.update_speed_limit_states()
