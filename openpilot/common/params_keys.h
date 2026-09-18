@@ -269,6 +269,16 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"SpeedLimitPolicy", {PERSISTENT | BACKUP, INT, "3"}},
     {"SpeedLimitValueOffset", {PERSISTENT | BACKUP, INT, "0"}},
 
+    // Speed camera (WiFi-paired navigation app) bridge
+    {"EnableCameraSpeedLimit", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"CameraSpeedLimitConnected", {CLEAR_ON_ONROAD_TRANSITION, BOOL}},
+    {"CameraSpeedLimitActive", {CLEAR_ON_ONROAD_TRANSITION, BOOL}},
+    {"CameraSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
+    {"CameraSpeedLimitDistance", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
+
+    // Sync cruise set speed to current speed on accelerator release
+    {"SyncSetSpeedWhileGas", {PERSISTENT | BACKUP, BOOL, "0"}},
+
     // Smart Cruise Control
     {"MapTargetVelocities", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
     {"SmartCruiseControlMap", {PERSISTENT | BACKUP, BOOL, "0"}},
