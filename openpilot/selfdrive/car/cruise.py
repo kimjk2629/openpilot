@@ -54,7 +54,10 @@ class VCruiseHelper(VCruiseHelperSP):
       if not self.CP.pcmCruise or (not self.CP_SP.pcmCruiseSpeed and _enabled):
         # if stock cruise is completely disabled, then we can use our own set speed logic
         self._update_v_cruise_non_pcm(CS, _enabled, is_metric)
+        self.sync_v_cruise_with_gas(CS)
+        v_cruise_kph_before_sla = self.v_cruise_kph
         self.update_speed_limit_assist_v_cruise_non_pcm()
+        self.update_camera_speed_limit_v_cruise_non_pcm(v_cruise_kph_before_sla)
         self.v_cruise_cluster_kph = self.v_cruise_kph
       else:
         self.v_cruise_kph = CS.cruiseState.speed * CV.MS_TO_KPH
