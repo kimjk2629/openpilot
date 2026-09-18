@@ -39,6 +39,14 @@ DESCRIPTIONS = {
   'RecordFront': tr_noop("Upload data from the driver facing camera and help improve the driver monitoring algorithm."),
   "IsMetric": tr_noop("Display speed in km/h instead of mph."),
   "RecordAudio": tr_noop("Record and store microphone audio while driving. The audio will be included in the dashcam video in comma connect."),
+  "EnableCameraSpeedLimit": tr_noop(
+    "Receive speed camera and section-average alerts broadcast over WiFi from a paired navigation app, and temporarily slow to " +
+    "Speed Limit Assist's speed while a camera is active. Your set speed is restored automatically once the camera is passed."
+  ),
+  "SyncSetSpeedWhileGas": tr_noop(
+    "While holding the accelerator past your cruise set speed, the set speed rises to match. Release the pedal and cruising " +
+    "continues at that higher speed instead of dropping back down."
+  ),
 }
 
 
@@ -96,6 +104,18 @@ class TogglesLayout(Widget):
         lambda: tr("Record and Upload Microphone Audio"),
         DESCRIPTIONS["RecordAudio"],
         "microphone.png",
+        True,
+      ),
+      "EnableCameraSpeedLimit": (
+        lambda: tr("Speed Camera Alerts (WiFi)"),
+        DESCRIPTIONS["EnableCameraSpeedLimit"],
+        "speed_limit.png",
+        True,
+      ),
+      "SyncSetSpeedWhileGas": (
+        lambda: tr("Sync Set Speed on Accelerator"),
+        DESCRIPTIONS["SyncSetSpeedWhileGas"],
+        "speed_limit.png",
         True,
       ),
       "IsMetric": (
