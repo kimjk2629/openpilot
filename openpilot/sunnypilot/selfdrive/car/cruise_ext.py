@@ -62,6 +62,15 @@ class VCruiseHelperSP:
     self.speed_limit_final_last = 0.
     self.speed_limit_final_last_kph = 0.
     self.prev_speed_limit_final_last_kph = 0.
+
+    # Speed camera (WiFi navigation app) bridge: temporary set-speed dip, restored once the
+    # camera is passed - unlike a normal map/car speed limit, which sunnypilot leaves as-is.
+    self.enable_camera_speed_limit = self.params.get_bool("EnableCameraSpeedLimit")
+    self.camera_speed_limit_active_prev = False
+    self.pre_camera_v_cruise_kph: float | None = None
+
+    # Sync cruise set speed to current speed while the accelerator is held past it
+    self.sync_set_speed_while_gas = self.params.get_bool("SyncSetSpeedWhileGas")
     self.req_plus = False
     self.req_minus = False
 
@@ -137,3 +146,35 @@ class VCruiseHelperSP:
 
     self.prev_sla_state = self.sla_state
     self.prev_speed_limit_final_last_kph = self.speed_limit_final_last_kph
+
+  def update_camera_speed_limit_v_cruise_non_pcm(self, v_cruise_kph_before_sla: float) -> None:
+    """Speed-camera dips (from the WiFi navigation-app bridge) are meant to be temporary: once
+    the camera is passed, hand the driver's previous cruise set speed back instead of leaving
+    it at the lowered value the way a normal map/car speed limit does."""
+    if not self.enable_camera_speed_limit:
+      return
+
+    camera_active = self.params.get_bool("CameraSpeedLimitActive")
+
+    if camera_active and not self.camera_speed_limit_active_prev:
+      # Just started dipping for a camera - remember the speed the driver had set before it.
+      self.pre_camera_v_cruise_kph = v_cruise_kph_before_sla
+
+    elif not camera_active and self.camera_speed_limit_active_prev and self.pre_camera_v_cruise_kph is not None:
+      # Camera passed - give the driver's set speed back.
+      self.v_cruise_kph = np.clip(self.pre_camera_v_cruise_kph, self.v_cruise_min, V_CRUISE_MAX)
+      self.pre_camera_v_cruise_kph = None
+
+    self.camera_speed_limit_active_prev = camera_active
+
+  def sync_v_cruise_with_gas(self, CS: car.CarState) -> None:
+    """While the accelerator is held past the current cruise set speed, ride the set speed up
+    with it, so releasing the pedal resumes at the higher speed instead of snapping back down."""
+    if not self.sync_set_speed_while_gas:
+      return
+    if not CS.cruiseState.enabled or not CS.gasPressed:
+      return
+
+    v_ego_kph = CS.vEgo * CV.MS_TO_KPH
+    if v_ego_kph > self.v_cruise_kph:
+      self.v_cruise_kph = np.clip(round(v_ego_kph, 1), self.v_cruise_min, V_CRUISE_MAX)
