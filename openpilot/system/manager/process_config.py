@@ -22,6 +22,9 @@ def driverview(started: bool, params: Params, CP: car.CarParams) -> bool:
 def enable_dm(started: bool, params: Params, CP: car.CarParams) -> bool:
   return (started or params.get_bool("IsDriverViewEnabled")) and not params.get_bool("DisableDM")
 
+def enable_camera_speed_limit(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return started and params.get_bool("EnableCameraSpeedLimit")
+
 def notcar(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and CP.notCar
 
@@ -188,6 +191,9 @@ procs += [
   # mapd
   NativeProcess("mapd", Paths.mapd_root(), ["bash", "-c", f"{MAPD_PATH} > /dev/null 2>&1"], mapd_ready),
   PythonProcess("mapd_manager", "openpilot.sunnypilot.mapd.mapd_manager", always_run),
+
+  # speed camera (WiFi navigation app) bridge
+  PythonProcess("navi_camera_bridge", "openpilot.sunnypilot.selfdrive.navi.navi_camera_bridge", and_(only_onroad, enable_camera_speed_limit)),
 
   # locationd
   NativeProcess("locationd_llk", "openpilot/sunnypilot/selfdrive/locationd", ["./locationd"], only_onroad),
