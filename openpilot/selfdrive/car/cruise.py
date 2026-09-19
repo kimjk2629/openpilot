@@ -68,6 +68,18 @@ class VCruiseHelper(VCruiseHelperSP):
         elif CS.cruiseState.speed == -1:
           self.v_cruise_kph = -1
           self.v_cruise_cluster_kph = -1
+
+        # Tesla with full openpilot longitudinal control (alpha_long) still mirrors the
+        # PCM/cluster set speed above (pcmCruise/pcmCruiseSpeed stay True for this brand,
+        # since the scroll-wheel button events aren't parsed into accelCruise/decelCruise -
+        # see opendbc/car/tesla/carstate.py), so SyncSetSpeedWhileGas and EnableCameraSpeedLimit
+        # never ran: both are only called from the non-pcm branch above. Layer them on top of
+        # the PCM-mirrored value here instead, so manual scroll-wheel control is untouched.
+        if self.CP.brand == "tesla" and self.CP.openpilotLongitudinalControl and self.v_cruise_initialized:
+          self.sync_v_cruise_with_gas(CS)
+          v_cruise_kph_before_sla = self.v_cruise_kph
+          self.update_camera_speed_limit_v_cruise_non_pcm(v_cruise_kph_before_sla)
+          self.v_cruise_cluster_kph = self.v_cruise_kph
     else:
       self.v_cruise_kph = V_CRUISE_UNSET
       self.v_cruise_cluster_kph = V_CRUISE_UNSET
