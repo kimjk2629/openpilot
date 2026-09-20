@@ -63,6 +63,14 @@ class CarState(CarStateBase):
     self._tesla_speed_resume_down_nanos = 0
     self._tesla_speed_resume_wait_idle = False
 
+    # Queue of accelCruise/decelCruise button pulses generated from manual
+    # scroll-wheel ticks (see observe_speed_wheel_frame), so the physical
+    # wheel can drive openpilot's own v_cruise the same way a stalk +/-
+    # button does on other cars. Each tick becomes one pressed=True event
+    # immediately followed by a pressed=False event on the next update().
+    self._wheel_button_queue: list = []
+    self._wheel_button_release_pending = None
+
   def observe_speed_wheel_frame(self, data: bytes, monotonic_nanos: int) -> None:
     if len(data) != 8 or (data[0] & 0x03) != 1:
       return
@@ -80,6 +88,7 @@ class CarState(CarStateBase):
     signed_tick = raw_tick - 0x40 if raw_tick & 0x20 else raw_tick
     direction = 1 if signed_tick > 0 else -1
     self.tesla_manual_speed_adjustment_counter += 1
+    self._wheel_button_queue.append(ButtonType.accelCruise if direction > 0 else ButtonType.decelCruise)
     opposite_nanos = self._tesla_speed_resume_down_nanos if direction > 0 else self._tesla_speed_resume_up_nanos
     if opposite_nanos and monotonic_nanos - opposite_nanos <= SPEED_AUTO_RESUME_GESTURE_NS:
       self.tesla_speed_auto_resume_gesture_counter += 1
@@ -92,6 +101,25 @@ class CarState(CarStateBase):
     else:
       self._tesla_speed_resume_down_nanos = monotonic_nanos
       self._tesla_speed_resume_up_nanos = 0
+
+  def drain_wheel_button_events(self) -> list:
+    """Turn queued scroll-wheel ticks into one accelCruise/decelCruise
+    press+release pair per tick, spread across consecutive update() calls.
+    A tick queued this frame is emitted as pressed=True; its pressed=False
+    follow-up is emitted on the very next update() before any further tick
+    in the queue is started, so openpilot's button-edge handling in
+    selfdrive/car/cruise.py sees a clean single step per detent."""
+    if self._wheel_button_release_pending is not None:
+      bt = self._wheel_button_release_pending
+      self._wheel_button_release_pending = None
+      return [structs.CarState.ButtonEvent(type=bt, pressed=False)]
+
+    if self._wheel_button_queue:
+      bt = self._wheel_button_queue.pop(0)
+      self._wheel_button_release_pending = bt
+      return [structs.CarState.ButtonEvent(type=bt, pressed=True)]
+
+    return []
 
   def update_summon_state(self, summon_state: str, cruise_enabled: bool):
     summon_now = summon_state in ("ACTIVE", "COMPLETE", "SELFPARK_STARTED")
@@ -306,7 +334,13 @@ class CarState(CarStateBase):
         else:
           self.suspected_fsd14_clear_frames = 0
 
-    # Buttons # ToDo: add Gap adjust button
+    # Buttons
+    # Manual scroll-wheel ticks (see observe_speed_wheel_frame, fed from the
+    # raw 0x3C2 vehicle-bus frame in interface.py) become accelCruise/
+    # decelCruise button pulses here so the physical wheel actually moves
+    # openpilot's own v_cruise, matching stalk +/- buttons on other cars.
+    ret.buttonEvents = [*ret.buttonEvents, *self.drain_wheel_button_events()]
+    # ToDo: add Gap adjust button
 
     # Messages needed by carcontroller
     self.das_control = copy.copy(cp_ap_party.vl["DAS_control"])
