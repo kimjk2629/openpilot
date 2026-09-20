@@ -277,7 +277,10 @@ class SpeedLimitAssist:
 
         # PRE_ACTIVE
         elif self.state == SpeedLimitAssistState.preActive:
-          if self.target_set_speed_confirmed:
+          # Tesla has no accelCruise/decelCruise/setCruise/resumeCruise button events on CAN,
+          # so target_set_speed_confirmed (cluster speed == target) can only pass by coincidence.
+          # Skip the manual-confirm wait for Tesla and go straight to active/adapting.
+          if self.target_set_speed_confirmed or self.CP.brand == "tesla":
             self._update_confirmed_state()
           elif self.pre_active_timer <= 0:
             # Timeout - session ended
