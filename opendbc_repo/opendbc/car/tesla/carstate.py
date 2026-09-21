@@ -71,6 +71,21 @@ class CarState(CarStateBase):
     self._wheel_button_queue: list = []
     self._wheel_button_release_pending = None
 
+    # Fallback path for harnesses that don't tap CAN bus 1 (the "vehicle"
+    # bus VCLEFT_switchStatus/0x3C2 lives on): observe_speed_wheel_frame()
+    # then never fires, so instead we watch the car's own displayed cruise
+    # set-speed (DI_digitalSpeed, decoded on the party bus everyone has)
+    # for step changes and synthesize the same accelCruise/decelCruise
+    # pulses from those. Gated on UI_warning.scrollWheelPressed (also on
+    # the party bus), a direct mechanical "wheel touched" bit, so this
+    # never fires on the car's own automatic speed-limit-follow set-speed
+    # adjustments, which produce identical-looking clean unit steps
+    # without anyone touching the wheel. See update() below.
+    self._prev_cluster_speed_ms = None
+    self._prev_cluster_enabled = False
+    self._prev_scroll_wheel_pressed = False
+    self._scroll_wheel_grace_frames = 0
+
   def observe_speed_wheel_frame(self, data: bytes, monotonic_nanos: int) -> None:
     if len(data) != 8 or (data[0] & 0x03) != 1:
       return
@@ -244,6 +259,36 @@ class CarState(CarStateBase):
     ret.cruiseState.speed = max(ret.cruiseState.speedCluster, 1e-3)
     ret.cruiseState.available = cruise_state == "STANDBY" or ret.cruiseState.enabled
     ret.cruiseState.standstill = False  # This needs to be false, since we can resume from stop without sending anything special
+
+    # Fallback scroll-wheel detection (see __init__ comment): when the raw
+    # 0x3C2 frame never arrives (no bus-1 tap), fall back to watching the
+    # car's own cluster set-speed for the same 1-unit (1 km/h or 1 mph)
+    # steps a scroll click produces, and turn each step into a queued
+    # accelCruise/decelCruise pulse. Gated two ways: (1) cruise must have
+    # been enabled for two consecutive frames, so the initial 0 -> set-speed
+    # jump on engagement isn't misread as a huge scroll; (2) a genuine
+    # scrollWheelPressed pulse must have been seen within about the last
+    # second, confirmed against a real drive log to lead every real
+    # scroll-driven speedCluster step by 0.0-0.5s, so automatic
+    # speed-limit-follow adjustments (same clean-step signature, but the
+    # wheel was never touched) are ignored.
+    scroll_wheel_pressed_raw = cp_party.vl["UI_warning"]["scrollWheelPressed"] == 1
+    if scroll_wheel_pressed_raw and not self._prev_scroll_wheel_pressed:
+      self._scroll_wheel_grace_frames = 100  # ~1s at the ~100Hz carState rate
+    elif self._scroll_wheel_grace_frames > 0:
+      self._scroll_wheel_grace_frames -= 1
+    self._prev_scroll_wheel_pressed = scroll_wheel_pressed_raw
+
+    cluster_unit_ms = CV.KPH_TO_MS if cruise_is_kph else CV.MPH_TO_MS
+    if (self._prev_cluster_enabled and ret.cruiseState.enabled and self._prev_cluster_speed_ms is not None
+        and self._scroll_wheel_grace_frames > 0):
+      cluster_delta = ret.cruiseState.speedCluster - self._prev_cluster_speed_ms
+      cluster_steps = round(cluster_delta / cluster_unit_ms)
+      if cluster_steps != 0 and abs(cluster_delta - cluster_steps * cluster_unit_ms) < cluster_unit_ms * 0.3:
+        cluster_bt = ButtonType.accelCruise if cluster_steps > 0 else ButtonType.decelCruise
+        self._wheel_button_queue.extend([cluster_bt] * min(abs(cluster_steps), 10))
+    self._prev_cluster_speed_ms = ret.cruiseState.speedCluster
+    self._prev_cluster_enabled = ret.cruiseState.enabled
     ret.standstill = cp_party.vl["ESP_B"]["ESP_vehicleStandstillSts"] == 1
     ret.accFaulted = cruise_state == "FAULT"
 
