@@ -86,6 +86,24 @@ class CarState(CarStateBase):
     self._prev_scroll_wheel_pressed = False
     self._scroll_wheel_grace_frames = 0
 
+    # On every cruiseState.available rising edge, cruise.py's VCruiseCarrot
+    # resets v_cruise_kph to the current vEgoCluster (see update_v_cruise:
+    # "v_cruise_kph = self.v_ego_kph_set"), NOT to this car's own displayed
+    # cruise set-speed -- so openpilot's own set speed and the Tesla's own
+    # dash bubble can start a drive tens of km/h apart, with every scroll
+    # click/flick above only ever applying a RELATIVE change on top of
+    # whatever that gap already was. Mirror the same rising edge here and,
+    # one frame later (once cruise.py's reset has actually landed, since
+    # button events queued on the very same frame as the reset would be
+    # immediately overwritten by it), queue enough 1-unit pulses to walk
+    # v_cruise_kph from that vEgoCluster baseline up/down to match the
+    # Tesla's own displayed set-speed -- independent of and in addition to
+    # the scrollWheelPressed-gated pulses above, since this is a one-time
+    # resync, not user input.
+    self._prev_cruise_available = False
+    self._engage_sync_pending = False
+    self._engage_sync_baseline_units = 0
+
   def observe_speed_wheel_frame(self, data: bytes, monotonic_nanos: int) -> None:
     if len(data) != 8 or (data[0] & 0x03) != 1:
       return
@@ -259,6 +277,23 @@ class CarState(CarStateBase):
     ret.cruiseState.speed = max(ret.cruiseState.speedCluster, 1e-3)
     ret.cruiseState.available = cruise_state == "STANDBY" or ret.cruiseState.enabled
     ret.cruiseState.standstill = False  # This needs to be false, since we can resume from stop without sending anything special
+
+    # Engage-time resync (see __init__ comment): catch cruise.py's v_cruise_kph
+    # reset to vEgoCluster one frame after it lands, then walk v_cruise_kph up
+    # to match this car's own displayed cruise speed so the two start a drive
+    # aligned instead of drifting apart by whatever the gap happened to be.
+    engage_sync_unit_ms = CV.KPH_TO_MS if cruise_is_kph else CV.MPH_TO_MS
+    if self._engage_sync_pending:
+      target_units = round(ret.cruiseState.speedCluster / engage_sync_unit_ms)
+      sync_diff = target_units - self._engage_sync_baseline_units
+      if sync_diff != 0:
+        sync_bt = ButtonType.accelCruise if sync_diff > 0 else ButtonType.decelCruise
+        self._wheel_button_queue.extend([sync_bt] * min(abs(sync_diff), 60))
+      self._engage_sync_pending = False
+    if ret.cruiseState.available and not self._prev_cruise_available:
+      self._engage_sync_baseline_units = round(ret.vEgoCluster / engage_sync_unit_ms)
+      self._engage_sync_pending = True
+    self._prev_cruise_available = ret.cruiseState.available
 
     # Fallback scroll-wheel detection (see __init__ comment): when the raw
     # 0x3C2 frame never arrives (no bus-1 tap), fall back to watching the
