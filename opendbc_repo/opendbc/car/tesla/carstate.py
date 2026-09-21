@@ -279,6 +279,14 @@ class CarState(CarStateBase):
       self._scroll_wheel_grace_frames -= 1
     self._prev_scroll_wheel_pressed = scroll_wheel_pressed_raw
 
+    # FLICK_SNAP_UNIT: a fast spin (more than one display unit moving in a
+    # single update) snaps to the next multiple of this many km/h or mph in
+    # the flick's direction -- matching stock Tesla's own scroll wheel, e.g.
+    # 42 -> 45 on an up-flick, the same way this fork's own long-press/VW-
+    # swipe "big step" already snaps to the nearest 10 (see cruise.py
+    # V_CRUISE_DELTA). A single slow click (exactly one unit) still moves
+    # the set speed by exactly one unit, unchanged.
+    FLICK_SNAP_UNIT = 5
     cluster_unit_ms = CV.KPH_TO_MS if cruise_is_kph else CV.MPH_TO_MS
     if (self._prev_cluster_enabled and ret.cruiseState.enabled and self._prev_cluster_speed_ms is not None
         and self._scroll_wheel_grace_frames > 0):
@@ -286,7 +294,21 @@ class CarState(CarStateBase):
       cluster_steps = round(cluster_delta / cluster_unit_ms)
       if cluster_steps != 0 and abs(cluster_delta - cluster_steps * cluster_unit_ms) < cluster_unit_ms * 0.3:
         cluster_bt = ButtonType.accelCruise if cluster_steps > 0 else ButtonType.decelCruise
-        self._wheel_button_queue.extend([cluster_bt] * min(abs(cluster_steps), 10))
+        if abs(cluster_steps) > 1:
+          # Fast flick: snap from the pre-flick displayed speed to the next
+          # FLICK_SNAP_UNIT boundary in the flick's direction, then queue
+          # exactly that many 1-unit pulses (cruise.py applies them one at
+          # a time, so the end result lands exactly on the snapped value).
+          prev_units = round(self._prev_cluster_speed_ms / cluster_unit_ms)
+          mod = prev_units % FLICK_SNAP_UNIT
+          if cluster_steps > 0:
+            target_units = prev_units + (FLICK_SNAP_UNIT - mod)
+          else:
+            target_units = prev_units - (mod if mod != 0 else FLICK_SNAP_UNIT)
+          pulse_count = min(abs(target_units - prev_units), 10)
+        else:
+          pulse_count = 1
+        self._wheel_button_queue.extend([cluster_bt] * pulse_count)
     self._prev_cluster_speed_ms = ret.cruiseState.speedCluster
     self._prev_cluster_enabled = ret.cruiseState.enabled
     ret.standstill = cp_party.vl["ESP_B"]["ESP_vehicleStandstillSts"] == 1
