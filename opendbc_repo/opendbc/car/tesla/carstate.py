@@ -282,6 +282,19 @@ class CarState(CarStateBase):
     # reset to vEgoCluster one frame after it lands, then walk v_cruise_kph up
     # to match this car's own displayed cruise speed so the two start a drive
     # aligned instead of drifting apart by whatever the gap happened to be.
+    #
+    # cruiseState.available can flap (STANDBY <-> off) several times in the
+    # first second or two of a drive, e.g. releasing the brake before the
+    # accelerator is pressed, well before the driver ever presses SET -- and
+    # cruise.py's own v_ego_kph_set reset fires on every single one of those
+    # edges too, unconditionally overwriting v_cruise_kph each time. Any
+    # correction burst still draining from an earlier edge is therefore
+    # already chasing a stale, since-overwritten baseline, and letting it
+    # keep running just stacks extra pulses on top of the next edge's
+    # (correct) burst. So every new rising edge drops whatever's still
+    # queued/in-flight from a previous one and starts clean -- only the
+    # last edge before things settle ever gets to fully drain, matching
+    # cruise.py's own "last reset wins" behavior exactly.
     engage_sync_unit_ms = CV.KPH_TO_MS if cruise_is_kph else CV.MPH_TO_MS
     if self._engage_sync_pending:
       target_units = round(ret.cruiseState.speedCluster / engage_sync_unit_ms)
@@ -291,6 +304,12 @@ class CarState(CarStateBase):
         self._wheel_button_queue.extend([sync_bt] * min(abs(sync_diff), 60))
       self._engage_sync_pending = False
     if ret.cruiseState.available and not self._prev_cruise_available:
+      # Drop only the not-yet-started queue; leave any single press already
+      # in flight (self._wheel_button_release_pending) alone so its release
+      # still follows -- clearing that too would leave cruise.py's button
+      # timer stuck "pressed" with no matching release until its own
+      # long-press timeout fired and misread it as a held button.
+      self._wheel_button_queue.clear()
       self._engage_sync_baseline_units = round(ret.vEgoCluster / engage_sync_unit_ms)
       self._engage_sync_pending = True
     self._prev_cruise_available = ret.cruiseState.available
