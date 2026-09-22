@@ -85,24 +85,27 @@ class CarState(CarStateBase):
     self._prev_cluster_enabled = False
     self._prev_scroll_wheel_pressed = False
     self._scroll_wheel_grace_frames = 0
-
-    # On every cruiseState.available rising edge, cruise.py's VCruiseCarrot
-    # resets v_cruise_kph to the current vEgoCluster (see update_v_cruise:
-    # "v_cruise_kph = self.v_ego_kph_set"), NOT to this car's own displayed
-    # cruise set-speed -- so openpilot's own set speed and the Tesla's own
-    # dash bubble can start a drive tens of km/h apart, with every scroll
-    # click/flick above only ever applying a RELATIVE change on top of
-    # whatever that gap already was. Mirror the same rising edge here and,
-    # one frame later (once cruise.py's reset has actually landed, since
-    # button events queued on the very same frame as the reset would be
-    # immediately overwritten by it), queue enough 1-unit pulses to walk
-    # v_cruise_kph from that vEgoCluster baseline up/down to match the
-    # Tesla's own displayed set-speed -- independent of and in addition to
-    # the scrollWheelPressed-gated pulses above, since this is a one-time
-    # resync, not user input.
     self._prev_cruise_available = False
     self._engage_sync_pending = False
-    self._engage_sync_baseline_units = 0
+
+    # Our own running estimate of what v_cruise_kph (cruise.py's internal
+    # set speed) currently is, since CarState has no way to read it back --
+    # only to influence it via queued button pulses. Re-anchored to
+    # vEgoCluster on every cruiseState.available rising edge (cruise.py
+    # resets v_cruise_kph the same way on the same edge: see
+    # update_v_cruise's "v_cruise_kph = self.v_ego_kph_set") and moved by
+    # the same amount as every pulse we queue, so it tracks our own
+    # commands exactly. Every scroll click/flick below computes its target
+    # as an ABSOLUTE display value (this car's own post-click/flick
+    # set-speed, or the next 5-unit snap for a flick) and queues however
+    # many pulses close the gap between this estimate and that target --
+    # not a delta relative to the previous display reading. That makes
+    # every scroll interaction self-correcting: if v_cruise_kph ever
+    # drifted from this estimate for a reason invisible from here (this
+    # fork's other auto speed-follow features all live in cruise.py, not
+    # CarState), the very next click or flick pulls it back into line
+    # instead of compounding the old gap forward.
+    self._shadow_v_cruise_units = None
 
   def observe_speed_wheel_frame(self, data: bytes, monotonic_nanos: int) -> None:
     if len(data) != 8 or (data[0] & 0x03) != 1:
@@ -279,29 +282,28 @@ class CarState(CarStateBase):
     ret.cruiseState.standstill = False  # This needs to be false, since we can resume from stop without sending anything special
 
     # Engage-time resync (see __init__ comment): catch cruise.py's v_cruise_kph
-    # reset to vEgoCluster one frame after it lands, then walk v_cruise_kph up
-    # to match this car's own displayed cruise speed so the two start a drive
+    # reset to vEgoCluster one frame after it lands, then walk our shadow
+    # estimate (and the real v_cruise_kph, via queued pulses) up to match
+    # this car's own displayed cruise speed, so the two start a drive
     # aligned instead of drifting apart by whatever the gap happened to be.
     #
     # cruiseState.available can flap (STANDBY <-> off) several times in the
     # first second or two of a drive, e.g. releasing the brake before the
     # accelerator is pressed, well before the driver ever presses SET -- and
     # cruise.py's own v_ego_kph_set reset fires on every single one of those
-    # edges too, unconditionally overwriting v_cruise_kph each time. Any
-    # correction burst still draining from an earlier edge is therefore
-    # already chasing a stale, since-overwritten baseline, and letting it
-    # keep running just stacks extra pulses on top of the next edge's
-    # (correct) burst. So every new rising edge drops whatever's still
-    # queued/in-flight from a previous one and starts clean -- only the
+    # edges too, unconditionally overwriting v_cruise_kph each time. So every
+    # new rising edge drops whatever's still queued/undrained from a
+    # previous one before re-anchoring the shadow estimate fresh -- only the
     # last edge before things settle ever gets to fully drain, matching
     # cruise.py's own "last reset wins" behavior exactly.
-    engage_sync_unit_ms = CV.KPH_TO_MS if cruise_is_kph else CV.MPH_TO_MS
+    sync_unit_ms = CV.KPH_TO_MS if cruise_is_kph else CV.MPH_TO_MS
     if self._engage_sync_pending:
-      target_units = round(ret.cruiseState.speedCluster / engage_sync_unit_ms)
-      sync_diff = target_units - self._engage_sync_baseline_units
+      target_units = round(ret.cruiseState.speedCluster / sync_unit_ms)
+      sync_diff = target_units - self._shadow_v_cruise_units
       if sync_diff != 0:
         sync_bt = ButtonType.accelCruise if sync_diff > 0 else ButtonType.decelCruise
         self._wheel_button_queue.extend([sync_bt] * min(abs(sync_diff), 60))
+        self._shadow_v_cruise_units = target_units
       self._engage_sync_pending = False
     if ret.cruiseState.available and not self._prev_cruise_available:
       # Drop only the not-yet-started queue; leave any single press already
@@ -310,7 +312,7 @@ class CarState(CarStateBase):
       # timer stuck "pressed" with no matching release until its own
       # long-press timeout fired and misread it as a held button.
       self._wheel_button_queue.clear()
-      self._engage_sync_baseline_units = round(ret.vEgoCluster / engage_sync_unit_ms)
+      self._shadow_v_cruise_units = round(ret.vEgoCluster / sync_unit_ms)
       self._engage_sync_pending = True
     self._prev_cruise_available = ret.cruiseState.available
 
@@ -340,29 +342,36 @@ class CarState(CarStateBase):
     # swipe "big step" already snaps to the nearest 10 (see cruise.py
     # V_CRUISE_DELTA). A single slow click (exactly one unit) still moves
     # the set speed by exactly one unit, unchanged.
+    #
+    # The target for either case is computed as an ABSOLUTE display value,
+    # then compared against the shadow estimate (see __init__) rather than
+    # queuing "cluster_steps" pulses directly -- so a click/flick also
+    # re-closes any gap the shadow has picked up since the last sync,
+    # instead of only ever applying a same-size relative nudge on top of it.
     FLICK_SNAP_UNIT = 5
     cluster_unit_ms = CV.KPH_TO_MS if cruise_is_kph else CV.MPH_TO_MS
     if (self._prev_cluster_enabled and ret.cruiseState.enabled and self._prev_cluster_speed_ms is not None
-        and self._scroll_wheel_grace_frames > 0):
+        and self._scroll_wheel_grace_frames > 0 and self._shadow_v_cruise_units is not None):
       cluster_delta = ret.cruiseState.speedCluster - self._prev_cluster_speed_ms
       cluster_steps = round(cluster_delta / cluster_unit_ms)
       if cluster_steps != 0 and abs(cluster_delta - cluster_steps * cluster_unit_ms) < cluster_unit_ms * 0.3:
-        cluster_bt = ButtonType.accelCruise if cluster_steps > 0 else ButtonType.decelCruise
         if abs(cluster_steps) > 1:
           # Fast flick: snap from the pre-flick displayed speed to the next
-          # FLICK_SNAP_UNIT boundary in the flick's direction, then queue
-          # exactly that many 1-unit pulses (cruise.py applies them one at
-          # a time, so the end result lands exactly on the snapped value).
+          # FLICK_SNAP_UNIT boundary in the flick's direction.
           prev_units = round(self._prev_cluster_speed_ms / cluster_unit_ms)
           mod = prev_units % FLICK_SNAP_UNIT
           if cluster_steps > 0:
             target_units = prev_units + (FLICK_SNAP_UNIT - mod)
           else:
             target_units = prev_units - (mod if mod != 0 else FLICK_SNAP_UNIT)
-          pulse_count = min(abs(target_units - prev_units), 10)
         else:
-          pulse_count = 1
-        self._wheel_button_queue.extend([cluster_bt] * pulse_count)
+          # Slow single click: target is simply this car's own new displayed value.
+          target_units = round(ret.cruiseState.speedCluster / cluster_unit_ms)
+        pulses_needed = target_units - self._shadow_v_cruise_units
+        if pulses_needed != 0:
+          cluster_bt = ButtonType.accelCruise if pulses_needed > 0 else ButtonType.decelCruise
+          self._wheel_button_queue.extend([cluster_bt] * min(abs(pulses_needed), 15))
+          self._shadow_v_cruise_units = target_units
     self._prev_cluster_speed_ms = ret.cruiseState.speedCluster
     self._prev_cluster_enabled = ret.cruiseState.enabled
     ret.standstill = cp_party.vl["ESP_B"]["ESP_vehicleStandstillSts"] == 1
