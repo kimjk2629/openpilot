@@ -297,7 +297,16 @@ class CarState(CarStateBase):
     # things settle ever gets to fully drain, matching cruise.py's own
     # "last reset wins" behavior exactly.
     unit_ms = CV.KPH_TO_MS if cruise_is_kph else CV.MPH_TO_MS
-    real_v_cruise_units = round(self.vCruiseKphReal / unit_ms) if self.vCruiseKphReal is not None else None
+    # self.vCruiseKphReal is always in km/h (see its docstring), unlike
+    # speedCluster/_prev_cluster_speed_ms which are in m/s -- so, unlike
+    # those, it has to be converted to m/s first before dividing by unit_ms
+    # to land in the same "display unit count" space as target_units below.
+    # Dividing the raw km/h value by unit_ms directly (as this used to)
+    # inflated it by 1/CV.KPH_TO_MS (~3.6x) on a kph-unit car, making
+    # pending_units always come out far larger than any real target_units
+    # and so pulses_needed always negative -- every click or flick queued
+    # decelCruise regardless of the actual scroll direction.
+    real_v_cruise_units = round(self.vCruiseKphReal * CV.KPH_TO_MS / unit_ms) if self.vCruiseKphReal is not None else None
     # Local running estimate of v_cruise_kph as pulses are queued this
     # frame, so an engage resync and a same-frame flick (e.g. the driver is
     # already mid-scroll right as cruise engages) stack correctly instead of
