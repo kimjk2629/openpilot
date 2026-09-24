@@ -265,6 +265,11 @@ class Car:
     CS.carrotCruise = 1 if self.v_cruise_helper.carrot_cruise_active else 0
 
     self.CI.CS.softHoldActive = CS.softHoldActive
+    # Feed the true v_cruise_kph this frame just computed back into the
+    # persistent CarState instance (see CarStateBase.vCruiseKphReal), so a
+    # brand's carstate.py can read the car's actual current set-speed on the
+    # next frame instead of estimating it blind.
+    self.CI.CS.vCruiseKphReal = v_cruise_kph
     state_done_ns = time.monotonic_ns()
     self.card_diag_stage_current = {
       'decode': (decode_done_ns - recv_ns) // 1000,
