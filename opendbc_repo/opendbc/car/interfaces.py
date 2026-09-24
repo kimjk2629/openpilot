@@ -712,6 +712,17 @@ class CarStateBase(ABC):
     self.is_metric = True
     self.lkas_enabled = False
 
+    # True v_cruise_kph as computed by selfdrive/car/cruise.py at the end of
+    # the previous frame, fed back here by card.py the same way it feeds
+    # back softHoldActive above. None until cruise.py has run at least once.
+    # A CarState implementation that synthesizes button events to drive
+    # v_cruise_kph (e.g. tesla/carstate.py's scroll-wheel emulation) can
+    # read this instead of guessing the car's set-speed itself, since
+    # cruise.py has several v_cruise-adjusting paths (auto gas pedal sync,
+    # lead-car speed sync, nav/ATC speed follow, button presses) that no
+    # CarState-side estimate can see coming.
+    self.vCruiseKphReal: float | None = None
+
     self.modelV2 = None
 
   @abstractmethod
