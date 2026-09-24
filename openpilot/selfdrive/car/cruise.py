@@ -397,7 +397,17 @@ class VCruiseCarrot:
           self.v_cruise_kph = CS.cruiseState.speed * CV.MS_TO_KPH
           self.v_cruise_cluster_kph = CS.cruiseState.speedCluster * CV.MS_TO_KPH
         else:
-          self.v_cruise_kph = np.clip(v_cruise_kph, 30, self._cruise_speed_max)
+          # Stock-PCM-tied cars are floored at 30 kph here because their own
+          # ACC/SCC generally can't resume below that without stop-and-go
+          # support. That floor doesn't fit a car where openpilot itself
+          # drives the pedals (openpilotLongitudinalControl=True, e.g. Tesla):
+          # the PCM's cruise state is only being mirrored here for engage/
+          # available, not for actual low-speed capability, so SET/RESUME
+          # below 30 kph was being forced up to 30 instead of the car's own
+          # current speed. Use the same configurable minimum as the other two
+          # branches above in that case instead.
+          min_kph = self._cruise_speed_min if self.CP.openpilotLongitudinalControl else 30
+          self.v_cruise_kph = np.clip(v_cruise_kph, min_kph, self._cruise_speed_max)
           self.v_cruise_cluster_kph = self.v_cruise_kph
     else:
       self.v_cruise_kph = np.clip(v_cruise_kph, self._cruise_speed_min, self._cruise_speed_max) #max(20, self.v_ego_kph_set) #V_CRUISE_UNSET
