@@ -182,6 +182,22 @@ class CarSpecificEvents:
         self.params.put_bool("ExperimentalMode", new_val)
       self.tesla_lkas_button_prev = lkas_pressed
 
+      # create_common_events() above added EventName.brakeHold whenever
+      # CS.brakeHoldActive (Tesla's own Auto Hold), which carries both an
+      # ET.NO_ENTRY ("Auto Hold Active") and an ET.WARNING ("Press Resume to
+      # Exit Brake Hold") alert. That NO_ENTRY makes a fresh SET/RESUME
+      # scroll click do nothing at all while Auto Hold is on and openpilot
+      # isn't engaged yet -- but on a stock Tesla, that exact same scroll
+      # click is the normal, driver-facing way to release Auto Hold and
+      # start TACC; no accelerator tap needed. Block the NO_ENTRY only (drop
+      # the event before we've ever engaged), so the click behaves the same
+      # under openpilot as it does on the car natively. Once already
+      # engaged, leave the event alone: brakeHold's ET.WARNING is what shows
+      # "Press Resume to Exit Brake Hold" if Auto Hold re-arms mid-drive
+      # (e.g. stopped at a light), which is the correct, working prompt.
+      if CS.brakeHoldActive and not CC.enabled and EventName.brakeHold in events.events:
+        events.events.remove(EventName.brakeHold)
+
     if CC.enabled:
       if self.vCruise_prev == 0 and CS.vCruise > 0:
         events.add(EventName.audioPrompt)
