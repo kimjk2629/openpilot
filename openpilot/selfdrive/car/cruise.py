@@ -156,6 +156,9 @@ from openpilot.common.params import Params
 #EventName = log.OnroadEvent.EventName
 
 class VCruiseCarrot:
+  # ~0.5s at the ~100Hz update_v_cruise rate. See _available_debounced.
+  _AVAILABLE_DEBOUNCE_FRAMES = 50
+
   def __init__(self, CP):
     self.CP = CP
     self.frame = 0
@@ -206,6 +209,19 @@ class VCruiseCarrot:
     self._lat_enabled = self.params.get_int("AutoEngage") > 0
     self._v_cruise_kph_at_brake = 0
     self.cruise_state_available_last = False
+    # Debounced view of CS.cruiseState.available, used only for the
+    # "snap v_cruise_kph to the current vehicle speed" reset below (see
+    # update_v_cruise). On an openpilotLongitudinalControl car the PCM's
+    # own available bit is just mirrored status, not something guarding
+    # actual longitudinal capability, and on Tesla specifically it's been
+    # observed to flap several times a second with no brake/gas involved
+    # while settling to a stop from ~1-7 kph -- every edge used to
+    # re-trigger the reset below, snapping v_cruise_kph to whatever the
+    # car happened to be doing at that instant, repeatedly, which reads
+    # to the driver as a single scroll click sending the set speed all
+    # over the place. See _AVAILABLE_DEBOUNCE_FRAMES.
+    self._available_debounced = False
+    self._available_debounce_frames = 0
 
     self._paddle_decel_active = False
     self.carrot_cruise_active = False
@@ -384,8 +400,28 @@ class VCruiseCarrot:
       #self.events.append(EventName.buttonCancel)
       self._cruise_ready = True if self._activate_cruise == -2 else False
 
+    # Debounce the "just became available" edge that drives the reset
+    # below, for openpilotLongitudinalControl cars only (see
+    # _available_debounced in __init__ for why: on Tesla specifically,
+    # CS.cruiseState.available can flap several times a second with no
+    # brake/gas involved while settling to a stop, and every raw edge used
+    # to re-trigger this reset). Other cars keep the original raw-edge
+    # behavior unchanged.
+    if self.CP.openpilotLongitudinalControl:
+      prev_available_debounced = self._available_debounced
+      if CS.cruiseState.available == self._available_debounced:
+        self._available_debounce_frames = 0
+      else:
+        self._available_debounce_frames += 1
+        if self._available_debounce_frames >= self._AVAILABLE_DEBOUNCE_FRAMES:
+          self._available_debounced = CS.cruiseState.available
+          self._available_debounce_frames = 0
+      just_became_available = self._available_debounced and not prev_available_debounced
+    else:
+      just_became_available = not self.cruise_state_available_last
+
     if CS.cruiseState.available:
-      if not self.cruise_state_available_last:
+      if just_became_available:
         self._lat_enabled = True
         v_cruise_kph = self.v_ego_kph_set
       if not self.CP.pcmCruise:
