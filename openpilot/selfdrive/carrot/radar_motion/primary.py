@@ -86,6 +86,13 @@ STATIONARY_FRONT_ANCHOR_MAX_SPEED_JUMP_MPS = 2.0
 STATIONARY_FRONT_ANCHOR_MAX_VISION_SPEED_DELTA_MPS = 24.0
 STATIONARY_FRONT_ANCHOR_VSTD_SIGMA = 4.0
 STATIONARY_FRONT_ANCHOR_MAX_DPATH_M = 1.25
+# Repeated visual position agreement can complete stationary confirmation
+# while the measured front track is being observed. Existence confidence is
+# separate from model speed uncertainty; the existing speed/conflict vetoes
+# still apply when this evidence is used.
+STATIONARY_FRONT_POSITION_HISTORY_MIN_PROB = 0.70
+STATIONARY_FRONT_POSITION_HISTORY_CONFIRM_PROB = 0.80
+STATIONARY_FRONT_POSITION_HISTORY_MAX_RANGE_RESIDUAL_M = 0.75
 STATIONARY_FRONT_RANGE_XSTD_SIGMA = 2.0
 STATIONARY_FRONT_RANGE_MAX_ERROR_M = 25.0
 STATIONARY_FRONT_RANGE_MAX_FRACTION = 0.25
@@ -150,11 +157,20 @@ STATIONARY_CLOSER_HANDOFF_RANGE_MAX_YREL_DELTA_M = 1.25
 STATIONARY_CLOSER_HANDOFF_MAX_DPATH_M = 1.0
 STATIONARY_CLOSER_HANDOFF_MAX_VISION_YREL_ERROR_M = 1.0
 STATIONARY_CLOSER_HANDOFF_MIN_VISION_RANGE_GAIN_M = 0.75
+# A distinct nearer stopped body can be more than 5 m ahead of the held one.
+# Reassociate only when vision resolves it clearly, not merely because it is
+# closer. Keep the ordinary matcher, measured front quality, and a longer hold.
+STATIONARY_DISTINCT_HANDOFF_MAX_VISION_ERROR_M = 2.5
+STATIONARY_DISTINCT_HANDOFF_MAX_ERROR_RATIO = 0.5
+STATIONARY_DISTINCT_HANDOFF_CONFIRMATION_S = 0.50
 STATIONARY_CLOSER_THAN_MOVING_MIN_DREL_GAIN_M = 3.0
 # Keep radar-only moving promotion disjoint from the stationary fallback.
 # A front-only point in this band needs vision, corner, or permitted SCC
 # corroboration instead of bypassing stationary-reflection safeguards.
 RADAR_ONLY_MOVING_MIN_VLEAD_MPS = STATIONARY_MAX_ABS_VLEAD_MPS
+# A confirmed front lead may brake to zero without becoming a new stationary
+# acquisition. Bound the small negative speed noise seen around standstill.
+RADAR_ONLY_MOVING_HELD_FRONT_MIN_VLEAD_MPS = -1.0
 RADAR_ONLY_MOVING_CONFIRMATION_S = 0.25
 RADAR_ONLY_MOVING_TENTATIVE_CONFIRMATION_S = 0.75
 RADAR_ONLY_MOVING_FAR_CORNER_CONFIRMATION_S = 1.0
@@ -792,6 +808,8 @@ class _RadarPositionEvidence:
   point: RadarPointSnapshot
   anchor_frames: int = 0
   anchor_time_s: float | None = None
+  position_since_s: float | None = None
+  position_frames: int = 0
 
 
 class VisionRadarMatcher:
@@ -1566,6 +1584,8 @@ class VisionRadarMatcher:
         since_s = previous.since_s if continuous else time_s
         anchor_frames = 0
         anchor_time_s = None
+        position_since_s = None
+        position_frames = 0
         if (
           vision is not None and vision.probability >= STATIONARY_VISION_MIN_PROB
           and point.d_rel >= STATIONARY_FRONT_POSITION_LOCK_MIN_DREL_M
@@ -1586,8 +1606,34 @@ class VisionRadarMatcher:
           if abs(point.d_rel - vision.d_rel) <= STATIONARY_FRONT_POSITION_LOCK_MAX_DISTANCE_ERROR_M:
             anchor_frames = min(anchor_frames + 1, STATIONARY_FRONT_ANCHOR_MIN_FRAMES)
             anchor_time_s = time_s
-        current[identity] = _RadarPositionEvidence(since_s, time_s, point, anchor_frames, anchor_time_s)
+            if vision.probability >= STATIONARY_FRONT_POSITION_HISTORY_MIN_PROB:
+              # A stable radar ID alone does not establish visual identity.
+              # Every sample must keep the tight position/quality gates above.
+              position_continuous = bool(
+                continuous and previous.position_since_s is not None
+                and abs(point.d_rel - previous.point.d_rel
+                        - 0.5 * (point.v_rel + previous.point.v_rel) * (time_s - previous.time_s))
+                <= STATIONARY_FRONT_POSITION_HISTORY_MAX_RANGE_RESIDUAL_M
+              )
+              position_since_s = previous.position_since_s if position_continuous else time_s
+              position_frames = min(previous.position_frames + 1, 6) if position_continuous else 1
+        current[identity] = _RadarPositionEvidence(
+          since_s, time_s, point, anchor_frames, anchor_time_s, position_since_s, position_frames,
+        )
     self._stationary_front_evidence = current
+
+  def _stationary_front_position_confirmed(
+    self, vision: VisionLead | None, point: RadarPointSnapshot, time_s: float,
+  ) -> bool:
+    evidence = self._stationary_front_evidence.get(self._identity(point))
+    return bool(
+      vision is not None
+      and vision.probability >= STATIONARY_FRONT_POSITION_HISTORY_CONFIRM_PROB
+      and evidence is not None and evidence.time_s == time_s
+      and evidence.position_since_s is not None
+      and time_s - evidence.position_since_s >= STATIONARY_CONFIRMATION_S
+      and evidence.position_frames >= STATIONARY_FRONT_MIN_VISION_SUPPORT_FRAMES
+    )
 
   def stationary_front_anchor_time(self, point: RadarPointSnapshot, time_s: float) -> float | None:
     evidence = self._stationary_front_evidence.get(self._identity(point))
@@ -1605,7 +1651,10 @@ class VisionRadarMatcher:
   ) -> float | None:
     if (
       vision is None or vision.probability < STATIONARY_VISION_MIN_PROB
-      or self.stationary_front_anchor_time(point, time_s) is None
+      or (
+        self.stationary_front_anchor_time(point, time_s) is None
+        and not self._stationary_front_position_confirmed(vision, point, time_s)
+      )
       or abs(point.v_lead - vision.velocity) > STATIONARY_FRONT_ANCHOR_MAX_VISION_SPEED_DELTA_MPS
       or not math.isfinite(vision.v_std) or vision.v_std <= 0.0
       or abs(point.v_lead - vision.velocity) > STATIONARY_FRONT_ANCHOR_VSTD_SIGMA * vision.v_std
@@ -2699,7 +2748,13 @@ class VisionRadarMatcher:
         )
         else STATIONARY_FRONT_MIN_VISION_SUPPORT_FRAMES
       )
-      if (
+      position_confirmed = (
+        self._stationary_front_position_confirmed(vision, selected[0], time_s)
+        and self._stationary_anchored_front_cost(
+          vision, selected[0], selected[1], time_s, yaw_rate_rad_s,
+        ) is not None
+      )
+      if not position_confirmed and (
         self._stationary_pending_since_s is None
         or time_s - self._stationary_pending_since_s
         < (
@@ -2880,7 +2935,7 @@ class VisionRadarMatcher:
     path: Sequence[tuple[float, float]],
     time_s: float | None,
   ) -> VisionRadarMatch | None:
-    """Track a central moving radar lead independently of visual range."""
+    """Acquire a moving lead; retain a continuous front lead through its stop."""
     if time_s is None or not math.isfinite(time_s):
       self._reset_radar_only_moving()
       return None
@@ -2890,10 +2945,32 @@ class VisionRadarMatcher:
       tuple[RadarPointSnapshot, float, float]
     ] = []
     for point in point_values:
+      held_stopping_front = (
+        point.source == "frontRadar"
+        and point.track_id != 0
+        and point.measured
+        and self._identity(point) == self.radar_only_moving_identity
+        and self._radar_only_moving_last_point is not None
+        and self._radar_only_moving_last_time_s is not None
+        and point.v_lead >= RADAR_ONLY_MOVING_HELD_FRONT_MIN_VLEAD_MPS
+        and self._stationary_position_continuous(
+          self._radar_only_moving_last_point,
+          self._radar_only_moving_last_time_s,
+          point,
+          time_s,
+        )
+      )
       if (
         self._radar_only_moving_source_rank(point) > 2
+        # Native tentative tracks can persist with plausible motion (EV9 ID35).
+        # Elapsed time alone must not promote them without vision support.
+        # Keep unknown state 0 for sources that do not report native status.
+        or (point.source == "frontRadar" and point.radar_track_state == 1)
         or not 0.5 < point.d_rel <= RADAR_ONLY_MOVING_MAX_DREL_M
-        or point.v_lead <= RADAR_ONLY_MOVING_MIN_VLEAD_MPS
+        or (
+          point.v_lead <= RADAR_ONLY_MOVING_MIN_VLEAD_MPS
+          and not held_stopping_front
+        )
         or (
           point.d_rel > RADAR_ONLY_MOVING_RECEDING_MAX_DREL_M
           and point.v_rel > RADAR_ONLY_MOVING_RECEDING_VREL_MPS
@@ -3478,6 +3555,19 @@ class VisionRadarMatcher:
         <= abs(stationary.point.d_rel - vision.d_rel)
       )
     )
+    distinct_vision_match = (
+      stationary is not None
+      and moving is not None
+      and vision is not None
+      and cost_supported
+      and vision_range_supported
+      and moving.point.radar_track_state >= STATIONARY_RADAR_ONLY_FRONT_MIN_TRACK_STATE
+      and moving.score >= VISION_MATCH_FRESH_MIN_SCORE
+      and abs(moving.point.d_rel - vision.d_rel) <= STATIONARY_DISTINCT_HANDOFF_MAX_VISION_ERROR_M
+      and abs(moving.point.d_rel - vision.d_rel)
+      <= STATIONARY_DISTINCT_HANDOFF_MAX_ERROR_RATIO * abs(stationary.point.d_rel - vision.d_rel)
+      and stationary.point.d_rel - moving.point.d_rel <= VISION_RADAR_MAX_DISTANCE_ERROR_M
+    )
     eligible = (
       stationary is not None
       and moving is not None
@@ -3496,7 +3586,8 @@ class VisionRadarMatcher:
       and (
         STATIONARY_CLOSER_HANDOFF_MIN_DREL_GAIN_M
         <= stationary.point.d_rel - moving.point.d_rel
-        <= STATIONARY_CLOSER_HANDOFF_MAX_DREL_DELTA_M
+        and (stationary.point.d_rel - moving.point.d_rel <= STATIONARY_CLOSER_HANDOFF_MAX_DREL_DELTA_M
+             or distinct_vision_match)
       )
       and abs(stationary.point.v_lead - moving.point.v_lead)
       <= STATIONARY_CLOSER_HANDOFF_MAX_VLEAD_DELTA_MPS
@@ -3512,10 +3603,15 @@ class VisionRadarMatcher:
       self._stationary_closer_challenger_since_s = time_s
     self._stationary_closer_challenger_last_point = moving.point
     self._stationary_closer_challenger_last_time_s = time_s
+    confirmation_s = (
+      STATIONARY_DISTINCT_HANDOFF_CONFIRMATION_S
+      if stationary.point.d_rel - moving.point.d_rel > STATIONARY_CLOSER_HANDOFF_MAX_DREL_DELTA_M
+      else STATIONARY_CLOSER_HANDOFF_CONFIRMATION_S
+    )
     return (
       self._stationary_closer_challenger_since_s is not None
       and time_s - self._stationary_closer_challenger_since_s
-      >= STATIONARY_CLOSER_HANDOFF_CONFIRMATION_S
+      >= confirmation_s
     )
 
   def _adopt_stationary_closer_handoff(

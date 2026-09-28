@@ -184,6 +184,7 @@ class TrajectoryCutInEstimate:
   paired_inward_motion_supported: bool = False
   entry_withdrawn: bool = False
   paired_body_entry: bool = False
+  stationary_pair_alias: bool = False
 
   @property
   def identity(self) -> tuple[str, int, int]:
@@ -251,14 +252,16 @@ def _median_slope(
   window_s: float,
 ) -> float:
   values = _values_since(observations, window_s)
+  # Read each attribute once rather than twice for every historical pair.
+  samples = tuple((value.time_s, getattr(value, attribute)) for value in values)
   slopes = []
-  for index, first in enumerate(values):
-    for second in values[index + 1:]:
-      dt = second.time_s - first.time_s
+  for index, (first_time, first_value) in enumerate(samples):
+    for second_time, second_value in samples[index + 1:]:
+      dt = second_time - first_time
       if dt < 0.10:
         continue
       slopes.append(
-        (getattr(second, attribute) - getattr(first, attribute)) / dt
+        (second_value - first_value) / dt
       )
   return float(statistics.median(slopes)) if slopes else 0.0
 
@@ -1204,6 +1207,7 @@ class TrajectoryCutInDetector:
       # motion; an inner body reflection inside the 2.15 m allowance is not
       # sufficient evidence that an otherwise parallel vehicle is entering.
       paired_front_entry_ahead = False
+      stationary_pair_alias = False
       if point.source.startswith("corner") and cross_sensor_point is not None:
         front_projection = project_to_model_path(
           path, cross_sensor_point.d_rel, cross_sensor_point.y_rel,
@@ -1230,6 +1234,22 @@ class TrajectoryCutInDetector:
             front_entry_s <= horizon_s
             and cross_sensor_point.d_rel + cross_sensor_point.v_rel * front_entry_s > 0.5
           )
+        # A stationary roadside return can jump between body facets in the
+        # corner position history. Association confirms an object exists, not
+        # that it is moving inward: do not let that vote override both radars'
+        # motion evidence while both returns remain outside the ego corridor.
+        stationary_pair_alias = (
+          cross_sensor_point.source == "frontRadar"
+          and abs(cross_sensor_point.v_lead) <= MIN_MOVING_VLEAD_MPS
+          and not vision_supported
+          and not current_overlap
+          and not paired_front_overlap
+          and front_clearance > 0.0
+          and front_inward < MIN_INWARD_RATE_MPS
+          and reported_inward < MIN_INWARD_RATE_MPS
+          and inward_rate - reported_inward > 0.75
+        )
+      common_ok = common_ok and not stationary_pair_alias
       paired_entry_ahead = (
         current_overlap
         or (ahead_at_overlap and paired_ahead_at_overlap)
@@ -1367,6 +1387,7 @@ class TrajectoryCutInDetector:
         or not front_curve_motion_supported
         or ambiguous_outer_body_pair
         or passing_before_overlap
+        or stationary_pair_alias
       ):
         # A hold bridges brief radar jitter, but must not resurrect a candidate
         # whose recent physical motion has clearly stopped or reversed.
@@ -1464,6 +1485,7 @@ class TrajectoryCutInDetector:
         or curve_alias
         or not front_curve_motion_supported
         or ambiguous_outer_body_pair
+        or stationary_pair_alias
       ):
         # The planner independently rejects a non-closing risk. Clear it here
         # as well so the validator and published radarState describe the same
@@ -1495,6 +1517,7 @@ class TrajectoryCutInDetector:
         else "side pass before path entry" if passing_before_overlap
         else "close-born rear pass" if close_born_rear_pass
         else "parallel side drift" if paired_parallel_drift
+        else "stationary pair motion disagreement" if stationary_pair_alias
         else "ambiguous outer-body pair" if ambiguous_outer_body_pair
         else "uncorroborated close front" if not close_front_supported
         else "front lateral uncertainty" if not front_motion_supported
@@ -1548,6 +1571,7 @@ class TrajectoryCutInDetector:
         paired_inward_motion_supported=paired_inward_motion_supported,
         entry_withdrawn=entry_withdrawn,
         paired_body_entry=paired_body_entry,
+        stationary_pair_alias=stationary_pair_alias,
       ))
 
     for key, state in tuple(self._tracks.items()):

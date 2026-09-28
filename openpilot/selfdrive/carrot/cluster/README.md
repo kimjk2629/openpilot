@@ -4,6 +4,75 @@ Standalone raylib cluster UI bundle for openpilot devices. The normal and road
 camera HUDs show available tire pressures around a fixed vehicle diagram beside
 the navigation panel; pressures below 31 psi are highlighted in red.
 
+## Code and rendering flow
+
+| Component | Responsibility |
+| --- | --- |
+| `../cluster_run.py`, `main.py` | Launcher, input/output selection, settings polling, render loop and cleanup. Device workers use normal `SCHED_OTHER` scheduling. |
+| `cluster_live.py`, `cluster_route_replay.py` | Convert live cereal messages or recorded events into `ClusterUiState`. Live input reuses the replay state builder; `radarState.leadOne` is labelled `L1`, and `leadTwo` is `L2`. |
+| `cluster_models.py`, `cluster_scene.py` | Immutable state/geometry, existing display merging, lane/path meshes and vehicle boxes. Actual distances remain available separately from the compressed 3D placement. |
+| `cluster_renderer.py` | Shared raylib drawing for the window and USB frame: 3D scene, calibrated road/wide-camera overlays, labels and HUD. |
+| `cluster_navi*.py`, `cluster_live_camera.py` | Navigation state/media and device camera input. |
+| `cluster_usb_pipeline.py`, `cluster_h264_pipeline.py`, `cluster_gles_*.py` | Frame transport, encoder workers and the comma GLES/NV12 output paths. |
+
+### First lead speed and distance
+
+The existing first lead (`L1`, `primary=True`, positive actual longitudinal
+distance) keeps a **24 px distance label and 22 px speed label** in both 3D
+views, including at long range. Road and wide-camera views use a **24 px**
+combined distance/speed label above its frame. These are screen-space font
+sizes, independent of the shrinking vehicle geometry and actual distance.
+The renderer keeps the whole L1 text group inside the viewport without reducing
+its font size. Secondary vehicle text that overlaps this group is omitted for
+that frame; the corresponding vehicle boxes/frames remain visible. This keeps
+distant L2 or adjacent-vehicle text from covering the enlarged L1 metrics.
+
+`primary` alone cannot identify this vehicle: it also marks `L2` and recorded
+cut-ins. `vehicle_has_lead_one_metrics()` therefore checks the exact `L1`
+role. L2, cut-ins, adjacent/rear vehicles and raw radar points retain their
+existing sizes; 3D labels still shrink from 18 to 180 metres for those objects.
+When L1 is absent, no other object inherits its enlarged text. Display merging
+retains the existing role and actual distance; font sizing does not select a
+new control lead or change radar detection.
+
+The existing `ClusterHudRadarInfo` visibility rules, source colors and
+metric/imperial conversions still apply. Missing speed is not fabricated, and
+existing stopped/slow-speed suppression remains in effect. In 3D, important
+lead distance labels retain their existing visibility even with radar info
+off; camera overlays retain their separate existing visibility rules.
+
+### Tests and synthetic pre-rendering
+
+From this repository checkout's root, using its Linux Python environment:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest -c /dev/null -p no:cacheprovider --confcutdir=openpilot/selfdrive/carrot/tests openpilot/selfdrive/carrot/tests/test_cluster_scene.py openpilot/selfdrive/carrot/tests/test_cluster_display.py openpilot/selfdrive/carrot/tests/test_cluster_performance_safeguards.py
+PYTHONPATH=. .venv/bin/python openpilot/selfdrive/carrot/cluster/render_lead_labels.py --output build/cluster_lead_labels
+```
+
+The rendering command needs an available OpenGL display (a Linux desktop or
+an Xvfb session); it opens a hidden raylib window and uses the production
+`render_to_png_bytes()` path and repository fonts. It writes 36 full-size PNGs,
+8 comparison sheets and `metrics.json` containing the actual text draw sizes
+and bounds. Cases cover 20/80/150/220 m in both 3D views and both camera views,
+dark/light themes, L2 and surrounding vehicles, missing/stopped L1, imperial
+units and swapped panels. Camera frames use a plain synthetic background.
+
+Unit tests exercise 8/18/80/150/220 m, all five radar-info modes, absent speed,
+and the distinction between L1 and other primary vehicles. The test command
+isolates these renderer tests from the repository's device/process fixtures.
+Host tests and PNGs verify label behavior and layout; they do not validate
+comma GPU drivers, real camera alignment, USB output or on-device performance.
+The production change uses the existing Python/raylib APIs and font assets,
+with no Windows-specific dependency or runtime branch.
+
+2026-09-21 host validation: **154 tests passed** under WSL Ubuntu/Linux Python
+3.12. All 36 synthetic frames were rendered through raylib; recorded L1 draws
+kept the specified sizes and stayed within the 1920x480 frame. Visual review
+covered long-range clipping/overlap, both themes and camera projections. An
+existing projection-only unit test now stubs camera-stream selection so it
+does not try to connect to live camera services on Linux.
+
 Run from the openpilot root:
 
 ```bash
@@ -183,9 +252,9 @@ hardware path.
 `--usb-h264-orientation landscape` tests direct 1920x462 output, while
 `--usb-h264-align 16` deliberately tests macroblock-aligned output such as
 1920x464. When `--fps` is omitted, non-live H264 USB runs use
-`--usb-h264-fps 30` as the render cap; live H264 runs follow
-`ClusterHudLiveFps`. The TURZX display frame-rate command follows the effective
-H264 FPS unless `--usb-display-fps 0` is passed explicitly. H264 chunks are no-ACK by
+`--usb-h264-fps 30` as the render cap. Device live USB output fixes rendering,
+encoding and the TURZX controller to 10 FPS, or 5 FPS while eGPU is active.
+Diagnostic non-live runs still accept explicit FPS overrides. H264 chunks are no-ACK by
 default like JPEG frame uploads; use
 `--usb-h264-wait-ack` for strict response diagnostics, or
 `--usb-h264-soft-ack` to mimic the vendor video sender's retry/status polling
@@ -275,12 +344,10 @@ Keep `--usb-h264-input-format nv12` for native hardware testing. Direct RGB
 USERPTR diagnostics were removed after measured device tests showed corrupted
 output across direct and hidden 32-bit RGB variants.
 
-Manager autostart omits `--fps` by default so live launches follow
-`ClusterHudLiveFps`. JPEG/PNG runs apply setting changes while running; H264
-runs exit and let `cluster_autorun` relaunch when the setting changes the
-encoder FPS because the V4L2 encoder timing, SPS timing, and automatic bitrate
-are fixed at startup. Set `CLUSTER_AUTORUN_FPS` only for fixed test overrides;
-`0` means uncapped.
+Manager autostart uses 10 FPS, or 5 FPS while eGPU is active. Device live USB
+output ignores legacy FPS settings and environment overrides. The live loop
+checks eGPU activity each second; JPEG/PNG update in place, while H264 restarts
+to keep encoder timing, SPS timing and automatic bitrate consistent.
 `ClusterHudDebug` controls the autorun output gate: `0` starts external HUD
 rendering only while openpilot is onroad, and `1`, `2`, and `3` keep the
 always-on debug behavior after power-up. In live input only, `2` also keeps the
@@ -290,19 +357,17 @@ debug UI before navi data has arrived. Normal mode checks the onroad gate every
 so a stale HUD frame does not remain visible.
 The autorun watcher normalizes locale before this dim-only USB path too, so
 vendor USB initialization does not fail before the renderer is launched.
-Manager autostart always configures the cluster process through openpilot's
-realtime helper. `ClusterHudCoreMode=0` maps to cores `1,2,3,4`, while mode `1`
-maps to all initially allowed CPU cores. `ClusterHudPriority` always controls
-the FIFO priority with range `1..99`, default `10`; `CLUSTER_REALTIME` is no
-longer read.
-Changing either param makes the running HUD exit so `cluster_autorun` can
-relaunch it with the new affinity/scheduler settings, without a whole system restart.
-Explicit `CLUSTER_REALTIME_CORES` or `CLUSTER_REALTIME_PRIORITY` environment
-values still override the corresponding Params.
+Manager autostart and `cluster_run` use normal `SCHED_OTHER` scheduling, so
+realtime sensor and control work takes precedence. Inherited realtime policy
+is dropped before starting display workers; failure to drop it stops startup.
+Onroad, UI workers use core6 and HUD workers use core7 at nice19. Offroad,
+all workers return to cores0..3, including always-on debug output. A missing
+or offlining target core falls back to little cores and is retried. Old CPU
+selection, FPS and realtime-priority settings/environment overrides are ignored.
+The supervisor waits for USB/onroad startup on little cores.
 The HUD reads the local Git branch immediately on every platform and refreshes
 the upstream update state asynchronously at most every 60 seconds. The Git
-worker changes itself to `SCHED_OTHER` before `ls-remote`/`fetch`, so TICI does
-not run those commands in the render process's FIFO scheduling class.
+worker also explicitly selects `SCHED_OTHER` before `ls-remote`/`fetch`.
 Native H.264 callback output is queued as complete access units. The bounded
 queue retains the latest codec config, keyframe, and frame without waiting for
 USB; stale access units are dropped and reported instead of failing the run.
@@ -423,14 +488,9 @@ the drive, lavender `vNAVI` appears in the same status slot instead. This
 availability status never follows `activeCarrot`, because vehicle-CAN speed
 candidates also change that control state. The center clock, EV indicator, and
 fuel/DEF gauges are unchanged.
-When `--fps` is omitted, `ClusterHudLiveFps` controls the render limit and is
-polled about once per second while running: `0` uncapped diagnostic mode, `1`
-10 Hz default, `2` 20 Hz, `3` 30 Hz, `4` 40 Hz, `5` 50 Hz, and `6` 60 Hz.
-Direct route/replay CLI runs also apply nonzero values; mode `0` keeps non-live
-H264 runs on the `--usb-h264-fps` safety cap. Explicit `--fps` remains a fixed
-override. For H264 USB output, changing the effective FPS exits the current HUD
-process so autostart can relaunch with a matching encoder FPS when a launcher
-is present.
+Device live USB output uses the fixed 10/5 FPS policy described above. Desktop
+and non-live diagnostic runs retain explicit `--fps`; without it non-live H264
+uses `--usb-h264-fps`. These diagnostic overrides do not change device live USB output.
 
 `ClusterNaviMapFps` independently controls the Android MAP MAIN request: mode
 `0` is 5 Hz, `1` is the 10 Hz default, `2` is 20 Hz, and `3` is 30 Hz. At

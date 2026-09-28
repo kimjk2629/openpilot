@@ -48,8 +48,10 @@ def build_usbgpu_model(spinner: Spinner) -> bool:
     "downloaded_bytes": manifest.size,
     "total_bytes": manifest.size,
   }
-  # Precompiled models carry their matching runtime; local SCons remains the fallback.
+  # Only ONNX models can fall back to local SCons compilation.
+  fallback = 'internal model' if manifest.precompiled_only else 'local compiler'
   from openpilot.selfdrive.modeld.precompiled_model import ensure_precompiled, record_failure
+  from openpilot.selfdrive.modeld.precompiled_validation import camera_sizes, device_context, validation_key, validation_cached, save_validation
   precompiled = None
   try:
     spinner.update("USB eGPU big model\nChecking precompiled model")
@@ -59,15 +61,31 @@ def build_usbgpu_model(spinner: Spinner) -> bool:
                              downloaded_bytes=done, total_bytes=total, detail="precompiled model")
     precompiled = ensure_precompiled(manifest, progress=download_progress)
   except Exception as exc:
-    print(f"Precompiled eGPU model unavailable; using local compiler: {exc}")
+    print(f"Precompiled eGPU model unavailable; using {fallback}: {exc}")
   if precompiled is not None:
     try:
       if usbgpu_present():
-        spinner.update("USB eGPU big model\nValidating precompiled model")
-        validation = subprocess.run([sys.executable, '-m', 'openpilot.selfdrive.modeld.precompiled_runner', str(precompiled)],
-                                    cwd=BASEDIR, check=True, timeout=120, text=True,
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        print(validation.stdout, end='')
+        sizes, key = camera_sizes(''), None
+        try:
+          device = device_context()
+          sizes = camera_sizes(device['device'])
+          key = validation_key(precompiled, device, sizes)
+        except (OSError, ValueError, KeyError, TypeError, ImportError):
+          print('Precompiled validation identity unavailable; running smoke test without cache')
+        if validation_cached(precompiled, key):
+          print('Reusing successful precompiled eGPU validation for this device/runtime')
+        else:
+          spinner.update("USB eGPU big model\nValidating precompiled model")
+          command = [sys.executable, '-m', 'openpilot.selfdrive.modeld.precompiled_runner', str(precompiled)]
+          for width, height in sizes:
+            command += ['--camera', f'{width}x{height}']
+          validation = subprocess.run(command, cwd=BASEDIR, check=True, timeout=300, text=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+          print(validation.stdout, end='')
+          try:
+            save_validation(precompiled, key)
+          except OSError as exc:
+            print(f'Could not cache successful precompiled validation: {exc}')
       write_big_model_status(model_cache_dir(), "compiled", detail="downloaded precompiled model", **status_values)
       print(f"Using precompiled eGPU model without SCons compilation: {precompiled}")
       return True
@@ -85,7 +103,10 @@ def build_usbgpu_model(spinner: Spinner) -> bool:
         write_big_model_status(model_cache_dir(), 'waiting_for_ignition', detail=detail, **status_values)
         print(f'Precompiled eGPU validation deferred: {detail}')
         return True
-      print(f"Precompiled eGPU validation failed; using local compiler: {exc}")
+      print(f"Precompiled eGPU validation failed; using {fallback}: {exc}")
+  if manifest.precompiled_only:
+    write_big_model_status(model_cache_dir(), "error", detail="precompiled model unavailable; using internal model", **status_values)
+    return False
   present = usbgpu_present()
   if not present:
     wait_started = time.monotonic()
@@ -263,7 +284,7 @@ def build(spinner: Spinner, dirty: bool = False, minimal: bool = False) -> None:
 
     # Show TextWindow
     spinner.close()
-    if not os.getenv("CI"):
+    if not os.getenv("CI") and os.getenv("CARROT_STARTUP_RECOVERY") != "1":
       with TextWindow("openpilot failed to build\n \n" + error_s) as t:
         t.wait_for_exit()
     exit(1)
@@ -280,8 +301,8 @@ def build(spinner: Spinner, dirty: bool = False, minimal: bool = False) -> None:
 
 
 if __name__ == "__main__":
-  spinner = Spinner()
-  spinner.update_progress(0, 100)
-  build_metadata = get_build_metadata()
-  build(spinner, build_metadata.openpilot.is_dirty, minimal = AGNOS)
-  build_usbgpu_model(spinner)
+  with Spinner() as spinner:
+    spinner.update_progress(0, 100)
+    build_metadata = get_build_metadata()
+    build(spinner, build_metadata.openpilot.is_dirty, minimal = AGNOS)
+    build_usbgpu_model(spinner)

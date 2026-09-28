@@ -271,6 +271,29 @@ struct CarState {
   vehicleNaviSectionActive @90 :Bool; # stock-navigation kind 7 indicates a non-school speed-limit section
   vehicleNaviSpeed @91 :Float32; # raw speed from the active stock-navigation CAN profile, kph
   vehicleNaviAvailable @92 :Bool; # stock-navigation 0x4BE has been observed during this drive
+  radarInput @93 :RadarInput;
+  steeringTouch @94 :SteeringTouch;
+
+  # Optional original vehicle receive signal. Separate from torque/override.
+  struct SteeringTouch {
+    available @0 :Bool;
+    valid @1 :Bool;
+    touched @2 :Bool;
+    sampleMonoTime @3 :UInt64;
+    rawStatus @4 :UInt8;
+    rawTouch1 @5 :UInt8;
+    rawTouch2 @6 :UInt8;
+  }
+
+  # Bind independent radar decoding to the exact CAN batch and ego state used
+  # by card. Empty batches still represent a control tick; receiveMonoTime is
+  # monotonic and must not be replaced by the later publication timestamp.
+  struct RadarInput {
+    firstCanMonoTime @0 :UInt64;
+    lastCanMonoTime @1 :UInt64;
+    canPacketCount @2 :UInt32;
+    receiveMonoTime @3 :UInt64;
+  }
   struct Tpms {
     fl @0 :Float32;
     fr @1 :Float32;
@@ -348,6 +371,7 @@ struct CarState {
 struct RadarData @0x888ad6581cf0aacb {
   errors @3 :Error;
   points @1 :List(RadarPoint);
+  radarTrackFlipped @4 :Bool; # frontRadar yRel/yvRel already inverted by RadarTrackFlip
 
   struct Error {
     canError @0 :Bool;

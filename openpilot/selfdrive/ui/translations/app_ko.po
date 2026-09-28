@@ -359,7 +359,7 @@ msgstr "속도를 mph 대신 km/h로 표시합니다."
 
 #: openpilot/selfdrive/selfdrived/events.py
 msgid "Distraction Level Too High"
-msgstr "방해 수준이 너무높습니다"
+msgstr "운전자 주의 부족으로 사용 제한"
 
 #: openpilot/selfdrive/selfdrived/events.py
 msgid "Donate logs to Twilsonco to get it added!"
@@ -1492,3 +1492,27 @@ msgstr "감지"
 #: openpilot/selfdrive/ui/mici/onroad/vision_renderer.py
 msgid "NO DETECTION"
 msgstr "미감지"
+
+#: openpilot/selfdrive/selfdrived/events.py
+msgid "CAN Error: Enable CameraSCC"
+msgstr "CAN 오류: CameraSCC 설정을 켜 주세요"
+
+#: openpilot/selfdrive/selfdrived/events.py
+msgid "SCC detected on camera bus"
+msgstr "카메라 버스에서 SCC 신호가 감지되었습니다"
+
+#: openpilot/selfdrive/selfdrived/events.py
+msgid "Reboot to Apply Update"
+msgstr "업데이트 적용을 위해 재부팅하세요"
+
+#: openpilot/selfdrive/selfdrived/events.py
+msgid "Park safely before rebooting your device"
+msgstr "안전한 곳에 주차한 뒤 재부팅하세요"
+
+#: openpilot/selfdrive/selfdrived/events.py
+msgid "Driver camera unavailable"
+msgstr "운전자 카메라 사용 불가"
+
+#: openpilot/selfdrive/selfdrived/events.py
+msgid "Monitoring driver controls"
+msgstr "버튼·페달·핸들 조작으로 감시 중"

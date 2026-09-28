@@ -77,9 +77,8 @@ class SelfdriveD:
     self.gps_location_service = get_gps_location_service(self.params)
     self.gps_packets = [self.gps_location_service]
     self.sensor_packets = ["accelerometer", "gyroscope"]
-    self.disable_dm = self.params.get_int("DisableDM")
     self.use_wide_camera = bool(self.params.get("UseWideCamera", return_default=True))
-    self.camera_packets = get_camera_packets(self.use_wide_camera, self.disable_dm, SIMULATION)
+    self.camera_packets = get_camera_packets(self.use_wide_camera)
 
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
@@ -87,7 +86,8 @@ class SelfdriveD:
     ignore = self.sensor_packets + self.gps_packets + ['alertDebug']
     if SIMULATION:
       ignore += ['driverCameraState', 'managerState']
-    ignore += ['driverMonitoringState']
+    if self.CP.notCar or SIMULATION:
+      ignore += ['driverMonitoringState']
 
     if REPLAY:
       # no vipc in replay will make them ignored anyways
@@ -133,9 +133,10 @@ class SelfdriveD:
     self.experimental_mode = False
     self.personality = self.read_personality_param()
     self.recalibrating_seen = False
-    self.dm_lockout_set = False
+    self.dm_lockout_set = self.params.get_bool("DriverTooDistracted")
     self.cutin_audio_tracker = CutinAlertTracker()
     self.dm_uncertain_alerted = False
+    self.update_reboot_alerted = False
     self.big_model_loading = False
     self.big_model_active = False
     self.big_model_ready_t = 0.0
@@ -184,6 +185,9 @@ class SelfdriveD:
     """Compute onroadEvents from carState"""
 
     self.events.clear()
+    from openpilot.selfdrive.modeld.jetlink.link import fault_active
+    if fault_active():
+      self.events.add(EventName.commIssue)
 
     if self.sm['controlsState'].lateralControlState.which() == 'debugState':
       self.events.add(EventName.joystickDebug)
@@ -202,6 +206,8 @@ class SelfdriveD:
     if not self.initialized:
       self.events.add(EventName.selfdriveInitializing)
       return
+
+    self.update_reboot_alert()
 
     # Check for user bookmark press (bookmark button or end of LKAS button feedback)
     if self.sm.updated['userBookmark']:
@@ -242,11 +248,10 @@ class SelfdriveD:
       self.events.add(EventName.resumeBlocked)
 
     # Handle DM
-    if not self.CP.notCar and self.params.get_int("DisableDM") == 0:
-      # Block engaging until ignition cycle after max number or time of distractions
-      if self.sm['driverMonitoringState'].lockout and not self.dm_lockout_set:
-        self.params.put_bool("DriverTooDistracted", True)
-        self.dm_lockout_set = True
+    if not self.CP.notCar:
+      if self.sm.all_checks(['driverMonitoringState']) and self.sm['driverMonitoringState'].cameraUnavailable:
+        self.events.add(EventName.driverMonitorFallback)
+      self.update_dm_lockout()
       # No entry conditions
       if self.sm['driverMonitoringState'].lockout or self.sm['driverMonitoringState'].alwaysOnLockout:
         self.events.add(EventName.tooDistracted)
@@ -390,7 +395,9 @@ class SelfdriveD:
       if not_running != self.not_running_prev:
         cloudlog.event("process_not_running", not_running=not_running, error=True)
       self.not_running_prev = not_running
-    if self.sm.recv_frame['managerState'] and (not_running - self.ignored_processes):
+    dm_fallback_processes = {'dmonitoringmodeld'} if (self.sm.all_checks(['driverMonitoringState']) and
+                            self.sm['driverMonitoringState'].cameraUnavailable) else set()
+    if self.sm.recv_frame['managerState'] and (not_running - self.ignored_processes - dm_fallback_processes):
       self.events.add(EventName.processNotRunning)
     else:
       if not SIMULATION and not self.rk.lagging:
@@ -505,6 +512,28 @@ class SelfdriveD:
     #    self.personality = (self.personality - 1) % 3
     #    self.params.put_nonblocking('LongitudinalPersonality', str(self.personality))
     #    self.events.add(EventName.personalityChanged)
+
+  def update_dm_lockout(self):
+    # One writer persists both lock and release from fresh DM output. Otherwise
+    # restarting DM after a parked reset would reload the old saved lockout.
+    if not self.sm.all_checks(['driverMonitoringState']):
+      return
+    age = time.monotonic() - self.sm.logMonoTime['driverMonitoringState'] / 1e9
+    if not 0 <= age < 0.25:
+      return
+    locked = self.sm['driverMonitoringState'].lockout
+    if locked != self.dm_lockout_set:
+      self.params.put_bool("DriverTooDistracted", locked)
+      self.dm_lockout_set = locked
+
+  def update_reboot_alert(self):
+    # One NNFF-style notice per onroad session, after startup alerts finish.
+    # Use the manager's fixed startup identity across ignition cycles.
+    if (not REPLAY and not SIMULATION and not self.update_reboot_alerted
+        and self.sm.frame * DT_CTRL >= 15.0 and self.sm.all_checks(['managerState'])
+        and self.sm['managerState'].rebootRequired):
+      self.events.add(EventName.updateRebootRequired)
+      self.update_reboot_alerted = True
 
   def data_sample(self):
     car_state = messaging.recv_one(self.car_state_sock)
@@ -636,7 +665,9 @@ class SelfdriveD:
 
 
 def main():
-  config_realtime_process(4, Priority.CTRL_HIGH)
+  # Pair short 100Hz state/control work on core6, leaving core4 for planning
+  # and radar preprocessing. Camerad remains SCHED_OTHER on the same core.
+  config_realtime_process(6, Priority.CTRL_HIGH)
   s = SelfdriveD()
   s.run()
 

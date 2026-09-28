@@ -137,16 +137,17 @@ def test_cluster_autorun_restarts_without_delay_after_orientation_change(monkeyp
     cluster_autorun.HUD_PARAM: 1,
     cluster_autorun.HUD_DEBUG_PARAM: 1,
     cluster_autorun.HUD_ENCODER_PARAM: cluster_autorun.ENCODER_HARDWARE,
-    cluster_autorun.HUD_LIVE_FPS_PARAM: 1,
     cluster_autorun.HUD_ORIENTATION_PARAM: 0,
-    cluster_autorun.HUD_CORE_MODE_PARAM: cluster_autorun.CORE_MODE_DEDICATED,
-    cluster_autorun.HUD_PRIORITY_PARAM: 10,
   }
   runs = []
 
   class FakeParams:
     def get_int(self, name):
       return values[name]
+
+    def get_bool(self, name):
+      assert name == cluster_autorun.USBGPU_ACTIVE_PARAM
+      return False
 
     def put_bool_nonblocking(self, _name, _value):
       return None
@@ -160,8 +161,9 @@ def test_cluster_autorun_restarts_without_delay_after_orientation_change(monkeyp
 
   monkeypatch.setattr(cluster_autorun, "Params", FakeParams)
   monkeypatch.setattr(cluster_autorun, "_configure_autorun_locale", lambda: None)
-  monkeypatch.setattr(cluster_autorun, "_configure_autorun_affinity", lambda: None)
-  monkeypatch.setattr(cluster_autorun, "_apply_realtime_setting_env", lambda *_args: None)
+  realtime_module = types.ModuleType("openpilot.common.realtime")
+  realtime_module.drop_realtime = lambda: None
+  monkeypatch.setitem(sys.modules, "openpilot.common.realtime", realtime_module)
   monkeypatch.setattr(cluster_autorun, "_hud_output_allowed", lambda _params: True)
   monkeypatch.setattr(cluster_autorun, "_wait_for_usbgpu_startup", lambda _params: None)
   monkeypatch.setattr(cluster_autorun, "_run_cluster_once", run_cluster_once)
@@ -289,22 +291,6 @@ def _new_h264_pipeline() -> H264UsbPipeline:
   )
 
 
-def test_cluster_autorun_uses_selected_affinity(monkeypatch):
-  module_name = "openpilot.selfdrive.carrot.cluster_autorun"
-  cluster_autorun = _import_cluster_autorun(monkeypatch)
-  affinity_calls = []
-  monkeypatch.setattr(cluster_autorun, "_cluster_realtime_cores", lambda: [1, 2, 3, 4])
-  monkeypatch.setattr(
-    cluster_autorun,
-    "_set_current_process_affinity",
-    lambda cores: affinity_calls.append(cores) or cores,
-  )
-
-  try:
-    cluster_autorun._configure_autorun_affinity()
-    assert affinity_calls == [[1, 2, 3, 4]]
-  finally:
-    sys.modules.pop(module_name, None)
 
 
 def test_cluster_hud_mode_two_has_no_usb_product_mapping():
@@ -313,19 +299,61 @@ def test_cluster_hud_mode_two_has_no_usb_product_mapping():
 
 
 @pytest.mark.parametrize("legacy_realtime_env", ("0", "1"))
-def test_cluster_run_always_applies_core_mode_and_priority(monkeypatch, legacy_realtime_env):
+def test_cluster_run_drops_realtime_before_affinity_despite_legacy_overrides(monkeypatch, legacy_realtime_env):
+  hardware_module = types.ModuleType("openpilot.system.hardware")
+  hardware_module.TICI = False
+  monkeypatch.setitem(sys.modules, "openpilot.system.hardware", hardware_module)
   cluster_run = importlib.import_module("openpilot.selfdrive.carrot.cluster_run")
   realtime_module = types.ModuleType("openpilot.common.realtime")
   calls = []
-  realtime_module.config_realtime_process = lambda cores, priority: calls.append((cores, priority))
+  realtime_module.drop_realtime = lambda: calls.append("SCHED_OTHER")
+  realtime_module.set_core_affinity = lambda cores: calls.append(cores)
   monkeypatch.setitem(sys.modules, "openpilot.common.realtime", realtime_module)
   monkeypatch.setenv("CLUSTER_REALTIME", legacy_realtime_env)
-  monkeypatch.setattr(cluster_run, "_resolved_realtime_cores", lambda: [1, 2, 3, 4])
-  monkeypatch.setattr(cluster_run, "_resolved_realtime_priority", lambda: 37)
+  monkeypatch.setenv("CLUSTER_REALTIME_PRIORITY", "99")
+  import openpilot.common.display_scheduling as scheduling
+  monkeypatch.setattr(scheduling, "DisplayScheduler", lambda core, **kw: types.SimpleNamespace(update=lambda onroad, **opts: calls.append((core, onroad))))
 
   cluster_run.configure_cluster_scheduling()
 
-  assert calls == [([1, 2, 3, 4], 37)]
+  assert calls == ["SCHED_OTHER", (7, False)]
+
+
+def test_cluster_run_stops_if_dropping_realtime_fails(monkeypatch):
+  hardware_module = types.ModuleType("openpilot.system.hardware")
+  hardware_module.TICI = False
+  monkeypatch.setitem(sys.modules, "openpilot.system.hardware", hardware_module)
+  cluster_run = importlib.import_module("openpilot.selfdrive.carrot.cluster_run")
+  realtime_module = types.ModuleType("openpilot.common.realtime")
+
+  def fail_drop():
+    raise PermissionError("scheduler denied")
+
+  realtime_module.drop_realtime = fail_drop
+  realtime_module.set_core_affinity = lambda _cores: pytest.fail("must stop before affinity or renderer setup")
+  monkeypatch.setitem(sys.modules, "openpilot.common.realtime", realtime_module)
+  with pytest.raises(PermissionError, match="scheduler denied"):
+    cluster_run.configure_cluster_scheduling()
+
+
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires Linux scheduler APIs")
+def test_cluster_worker_inherits_normal_linux_policy(monkeypatch):
+  import threading
+
+  cluster_run = importlib.import_module("openpilot.selfdrive.carrot.cluster_run")
+  realtime_module = importlib.import_module("openpilot.common.realtime")
+  monkeypatch.setattr(realtime_module, "PC", False)
+  import openpilot.system.hardware as hardware
+  monkeypatch.setattr(hardware, "TICI", False)
+  cluster_run.configure_cluster_scheduling()
+  policies = []
+  worker = threading.Thread(target=lambda: policies.append((os.sched_getscheduler(0), os.sched_getparam(0).sched_priority)))
+  worker.start()
+  worker.join(timeout=2)
+  assert not worker.is_alive()
+  assert policies == [(os.SCHED_OTHER, 0)]
 
 
 def test_git_status_remote_disabled_never_starts_git_worker(tmp_path, monkeypatch):
@@ -631,8 +659,6 @@ def test_cluster_autorun_falls_back_only_for_h264_initialization(monkeypatch):
   cluster_autorun._run_cluster_once(
     hud_mode=0,
     encoder_mode=cluster_autorun.ENCODER_AUTO,
-    core_mode=0,
-    priority=10,
   )
 
   assert calls[0][calls[0].index("--usb-h264-backend") + 1] == "native"
@@ -658,8 +684,6 @@ def test_cluster_autorun_leaves_navi_server_owned_by_standalone_process(monkeypa
     hud_mode=0,
     configured_encoder_mode=cluster_autorun.ENCODER_AUTO,
     active_encoder_mode=cluster_autorun.ENCODER_HARDWARE,
-    core_mode=0,
-    priority=10,
   )
 
   assert "--navi-overlay" not in args
@@ -675,8 +699,6 @@ def test_cluster_autorun_caps_h264_upload_rate_while_egpu_is_active(monkeypatch)
     hud_mode=0,
     configured_encoder_mode=cluster_autorun.ENCODER_AUTO,
     active_encoder_mode=cluster_autorun.ENCODER_HARDWARE,
-    core_mode=0,
-    priority=10,
     usbgpu_active=True,
   )
 
@@ -709,9 +731,7 @@ def test_cluster_autorun_does_not_fallback_after_runtime_failure(monkeypatch):
     cluster_autorun._run_cluster_once(
       hud_mode=0,
       encoder_mode=cluster_autorun.ENCODER_AUTO,
-      core_mode=0,
-      priority=10,
-    )
+      )
 
   assert len(calls) == 1
 

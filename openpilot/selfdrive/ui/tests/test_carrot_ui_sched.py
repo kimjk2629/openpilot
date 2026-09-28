@@ -1,14 +1,4 @@
-"""carrot 전용: UI 스케줄러 foundation(상시 SCHED_OTHER/core5) 회귀 테스트.
-
-기존 FIFO51/core5 UI는 radar(FIFO51)와 같은 우선순위로 core5를 점유해
-20Hz cadence를 위협했다. foundation 계약:
-- UI는 상시 SCHED_OTHER (RT/FIFO 승격 프리미티브 부재, 재도입 금지)
-- 시작은 core0 부트스트랩(offroad power-save의 core4~7 offline 대응),
-  onroad에서 render loop가 cores={5}로 re-affine (실패 시 다음 프레임 재시도)
-- 시작 시 SCHED_OTHER를 명시 적용하고 readback 검증 (false success 금지,
-  검증 불가면 fail-stop), gc.disable()은 유지
-- core7은 modeld+plannerd+dmonitoringmodeld 전용 — UI affinity 재도입 금지
-"""
+"""UI normal-scheduler contract; C3 shares little/core6, C4 retains core6."""
 import ast
 import os
 import sys
@@ -61,7 +51,7 @@ def _affinity_shapes(tree):
 @pytest.mark.skipif(sys.platform != "linux", reason="sched_* API는 Linux 전용")
 class TestEnsureSchedOtherContract:
   """시작 시 SCHED_OTHER 명시 적용/readback — false success 금지, bounded 재시도,
-  검증 불가면 fail-stop (RT UI가 core5의 radar를 굶기며 돌면 안 된다)."""
+  검증 불가면 fail-stop (RT UI가 센서·위치 추정을 굶기며 돌면 안 된다)."""
 
   def _run(self, monkeypatch, *, policies, drop_raises=False):
     logs = {"info": [], "critical": []}
@@ -117,22 +107,15 @@ class TestEnsureSchedOtherContract:
 class TestUiStartupAst:
   """ui.py 시작/재affine 구조 고정 — import 부작용 때문에 AST 검증."""
 
-  def test_cores_var_assigned_literal_five(self):
-    # cores 변수에 정확히 {5}가 할당된다 (파일 어딘가의 {5}가 아니라 할당 구조)
+  def test_ui_uses_onroad_core6_policy(self):
     tree = _ui_py_tree()
-    assigns = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
-               and any(isinstance(t, ast.Name) and t.id == "cores" for t in n.targets)]
-    assert len(assigns) == 1
-    val = assigns[0].value
-    assert isinstance(val, ast.Set) and len(val.elts) == 1
-    assert isinstance(val.elts[0], ast.Constant) and val.elts[0].value == 5
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "DisplayScheduler"]
+    assert len(calls) == 1 and calls[0].args[0].value == 6
 
-  def test_bootstrap_core0_and_reaffine_linked_to_cores(self):
-    shapes = _affinity_shapes(_ui_py_tree())
-    assert ("const_list", (0,)) in shapes    # core0 부트스트랩 (상수 리스트)
-    assert ("list_of_var", "cores") in shapes  # re-affine은 cores 변수와 직접 연결
-    # 부트스트랩과 re-affine 외 다른 affinity 호출 형태는 없어야 한다
-    assert all(s in (("const_list", (0,)), ("list_of_var", "cores")) for s in shapes)
+  def test_bootstrap_core0_and_runtime_transition(self):
+    assert ("const_list", (0,)) in _affinity_shapes(_ui_py_tree())
+    source = (UI_DIR / "ui.py").read_text()
+    assert "scheduler.update(ui_state.started)" in source
 
   def test_gc_disable_retained(self):
     # 스케줄러 helper 제거 과정에서 gc.disable()까지 사라지면 안 된다 —
@@ -164,29 +147,13 @@ class TestUiStartupAst:
     assert 51 not in call_const_args and 53 not in call_const_args
 
   def test_no_core7_ui_affinity(self):
-    # core7은 modeld(FIFO54)+plannerd(FIFO51)+dmonitoringmodeld(FIFO5) 전용 — UI 재배치 금지
+    # core7은 modeld(FIFO54)+dmonitoringmodeld(FIFO5) 전용 — UI 재배치 금지
     tree = _ui_py_tree()
     for node in ast.walk(tree):
       if isinstance(node, (ast.Set, ast.List, ast.Tuple)):
         consts = {e.value for e in node.elts if isinstance(e, ast.Constant)}
         assert 7 not in consts
 
-  def test_reaffine_failure_swallowed_and_retryable(self):
-    # affinity 실패(offroad에 core5 offline 등)가 UI를 죽이면 안 된다 —
-    # try/except OSError로 삼키고, 렌더 루프 안이라 다음 프레임에 재시도된다
-    tree = _ui_py_tree()
-
-    def contains_reaffine(node):
-      return any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-                 and n.func.id == "set_core_affinity" and n.args
-                 and isinstance(n.args[0], ast.Call) for n in ast.walk(node))
-
-    guarded = [t for t in ast.walk(tree) if isinstance(t, ast.Try) and contains_reaffine(t)
-               and any(h.type is not None and isinstance(h.type, ast.Name)
-                       and h.type.id == "OSError" for h in t.handlers)]
-    assert guarded, "re-affine은 try/except OSError 안에 있어야 한다"
-    loops = [n for n in ast.walk(tree) if isinstance(n, (ast.For, ast.While))]
-    assert any(any(t in ast.walk(loop) for t in guarded) for loop in loops)
 
 
 class TestNoFifoAnywhereInUi:

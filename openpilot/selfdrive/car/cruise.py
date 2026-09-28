@@ -5,6 +5,7 @@ from openpilot.cereal import car
 from openpilot.common.constants import CV
 from openpilot.selfdrive.carrot.carrot_man_input import get_carrot_man
 from openpilot.selfdrive.carrot.cruise_gap import cruise_gap_levels, next_gap_personality, supported_gap_levels
+from openpilot.selfdrive.carrot.bluetooth.model import BLUETOOTH_CANCEL, CommandReader, REMOTE_BUTTONS
 
 from opendbc.car import structs
 GearShifter = structs.CarState.GearShifter
@@ -161,11 +162,10 @@ class VCruiseCarrot:
 
   def __init__(self, CP):
     self.CP = CP
+    self.bluetooth_commands = CommandReader('cruise')
     self.frame = 0
     self.params_memory = Params("/dev/shm/params")
     self.params = Params()
-    from openpilot.selfdrive.controls.lib.drive_helpers import is_volkswagen_meb
-    self.is_vw_meb = is_volkswagen_meb(CP)
     self.v_cruise_kph = 20 #V_CRUISE_UNSET
     self.v_cruise_cluster_kph = 20 #V_CRUISE_UNSET
     self.v_cruise_kph_last = 20
@@ -337,15 +337,6 @@ class VCruiseCarrot:
     self._add_log("")
     self.update_params(is_metric)
     self.frame += 1
-    # MEB(ID.4): SET/RESUME으로 (재)인게이지하면 상시조향도 복구.
-    # TA 버튼 등으로 조향만 꺼진 뒤 SET 재인게이지 시 롱컨만 살고 조향이 죽는 문제 방지
-    # (가감속 버튼 핸들러는 이미 _lat_enabled를 켜지만 setCruise는 핸들러가 없음).
-    if self.is_vw_meb and not self._lat_enabled:
-      for be in CS.buttonEvents:
-        if be.pressed and be.type in (ButtonType.setCruise, ButtonType.resumeCruise):
-          self._lat_enabled = True
-          self._add_log("Lateral enabled (set/resume engage)")
-          break
     if CS.gearShifter != GearShifter.drive:
       self.autoCruiseControl_cancel_timer = 20 * 100  # 20 sec
     else:
@@ -474,14 +465,22 @@ class VCruiseCarrot:
     self.v_cruise_kph = np.clip(self.v_cruise_kph, self._cruise_speed_min, self._cruise_speed_max)
     self.v_cruise_cluster_kph = self.v_cruise_kph
 
-  def _prepare_buttons(self, CS, v_cruise_kph):
+  def _prepare_buttons(self, CS, v_cruise_kph, remote=None):
     button_kph = v_cruise_kph
     button_type = 0
     buttonEvents = CS.buttonEvents
+    if remote and remote.endswith('Long') and remote[:-4] in REMOTE_BUTTONS:
+      # A mapped long action represents one native long-press step, even when
+      # assigned to a short HID gesture. Never leave a synthetic held button.
+      button_type = getattr(ButtonType, remote[:-4])
+      if button_type in (ButtonType.accelCruise, ButtonType.decelCruise):
+        button_kph = self._long_button_speed(button_kph, button_type)
+      return button_kph, button_type, True
+    if remote in REMOTE_BUTTONS:
+      buttonEvents = [ButtonEvent.new_message(type=remote, pressed=True), ButtonEvent.new_message(type=remote, pressed=False)]
 
     SPEED_UP_UNIT = self._cruise_speed_unit_basic
     SPEED_DOWN_UNIT = self._cruise_speed_unit if self._cruise_button_mode in [1, 2, 3] else self._cruise_speed_unit_basic
-    V_CRUISE_DELTA = 10
     is_metric = self.is_metric
 
     # long press tracking
@@ -510,7 +509,7 @@ class VCruiseCarrot:
         self.button_cnt = 1
         self.button_prev = bt
         # VW 쓸어올리기(2단): 누르기 시작 시점의 GRA_Tip_Stufe_2 샘플 (이후 유지 중 래치로 보강)
-        self.button_big_step = bt in [ButtonType.accelCruise, ButtonType.decelCruise] and CS.cruiseSpeedBigStep
+        self.button_big_step = remote is None and bt in [ButtonType.accelCruise, ButtonType.decelCruise] and CS.cruiseSpeedBigStep
         self.button_long_time = self._cruise_button_long_delay if bt in [ButtonType.accelCruise, ButtonType.decelCruise] else self._cruise_button_long_delay + 30
 
       elif not b.pressed and self.button_cnt > 0 and bt == self.button_prev:
@@ -518,12 +517,8 @@ class VCruiseCarrot:
         if bt == ButtonType.cancel:
           button_type = bt
         elif self.button_big_step and not self.long_pressed and bt in [ButtonType.accelCruise, ButtonType.decelCruise]:
-          # VW swipe (stage-2): jump to next multiple of V_CRUISE_DELTA (=+10 like the stock stalk)
-          mod = button_kph % V_CRUISE_DELTA
-          if bt == ButtonType.accelCruise:
-            button_kph += V_CRUISE_DELTA - mod
-          else:
-            button_kph -= V_CRUISE_DELTA - (-mod % V_CRUISE_DELTA)
+          # VW swipe (stage-2): jump to the next multiple of 10 like the stock stalk.
+          button_kph = self._long_button_speed(button_kph, bt)
           button_type = bt
         elif not self.long_pressed:
           if bt == ButtonType.accelCruise:
@@ -546,11 +541,7 @@ class VCruiseCarrot:
       #  button_type = bt
       #  self.button_cnt = 0
       if bt in [ButtonType.accelCruise, ButtonType.decelCruise]:
-        mod = button_kph % V_CRUISE_DELTA
-        if bt == ButtonType.accelCruise:
-          button_kph += V_CRUISE_DELTA - mod
-        else:
-          button_kph -= V_CRUISE_DELTA - (-mod % V_CRUISE_DELTA)
+        button_kph = self._long_button_speed(button_kph, bt)
         button_type = bt
         self.button_cnt %= self.button_long_time
       else: #if bt in [ButtonType.gapAdjustCruise, ButtonType.lfaButton]:
@@ -558,7 +549,19 @@ class VCruiseCarrot:
           button_type = bt
         #self.button_cnt %= self.button_long_time
 
+    # Dedicated SET/RES are one-shot actions on release, even after a long hold.
+    # They do not borrow +/- timers or their speed-step/swipe behavior.
+    if button_type != ButtonType.cancel:
+      for b in buttonEvents:
+        if not b.pressed and b.type in (ButtonType.setCruise, ButtonType.resumeCruise):
+          return button_kph, b.type, False
     return button_kph, button_type, self.long_pressed
+
+  @staticmethod
+  def _long_button_speed(speed, button):
+    step = 10
+    remainder = speed % step
+    return speed + step - remainder if button == ButtonType.accelCruise else speed - step + (-remainder % step)
 
   def _carrot_command(self, v_cruise_kph, button_type, long_pressed):
     if self.carrot_cmd_index_last != self.carrot_cmd_index:
@@ -596,11 +599,19 @@ class VCruiseCarrot:
     return v_cruise_kph, button_type, long_pressed
 
   def _update_cruise_buttons(self, CS, CC, v_cruise_kph):
-    button_kph, button_type, long_pressed = self._prepare_buttons(CS, v_cruise_kph)
+    remote = self.bluetooth_commands.read(allowed=(CS.canValid and CS.cruiseState.available and
+      CS.gearShifter == GearShifter.drive and not CS.buttonEvents and self.button_cnt == 0))
+    if getattr(self.bluetooth_commands, 'is_repeat', False) and not CC.enabled:
+      remote = None  # Holding a remote must never re-engage after disengagement.
+    button_kph, button_type, long_pressed = self._prepare_buttons(CS, v_cruise_kph, remote)
+    remote_enable = remote in ('accelCruise', 'decelCruise', 'accelCruiseLong', 'decelCruiseLong') and not CC.enabled
+    # SET during soft hold retains its existing cancel behavior.
+    if remote == 'decelCruise' and self._soft_hold_active > 0:
+      remote_enable = False
 
     v_cruise_kph, button_type, long_pressed = self._carrot_command(v_cruise_kph, button_type, long_pressed)
 
-    if button_type in [ButtonType.accelCruise, ButtonType.decelCruise]:
+    if button_type in [ButtonType.accelCruise, ButtonType.decelCruise, ButtonType.setCruise, ButtonType.resumeCruise]:
       self._paddle_decel_active = False
       if self.autoCruiseControl_cancel_timer > 0:
         self._add_log(f"AutoCruiseControl cancel timer RESET {button_type}")
@@ -610,7 +621,22 @@ class VCruiseCarrot:
         self._cruise_cancel_state = False
 
     if not long_pressed:
-      if button_type == ButtonType.accelCruise:
+      if button_type in (ButtonType.setCruise, ButtonType.resumeCruise):
+        self._lat_enabled = True
+        self._soft_hold_active = 0
+        self._cruise_ready = False
+        self.carrot_cruise_active = False
+        self._pause_auto_speed_up = button_type == ButtonType.setCruise
+        if button_type == ButtonType.setCruise:
+          v_cruise_kph = self._current_speed_for_initial_resume()
+        elif self._v_cruise_kph_at_brake > 0:
+          v_cruise_kph = self._v_cruise_kph_at_brake
+        elif not self._cruise_speed_initialized:
+          v_cruise_kph = self._current_speed_for_initial_resume()
+        self._v_cruise_kph_at_brake = 0
+        self._cruise_speed_initialized = True
+
+      elif button_type == ButtonType.accelCruise:
         self._lat_enabled = True
         self._pause_auto_speed_up = False
         if self._soft_hold_active > 0:
@@ -673,7 +699,7 @@ class VCruiseCarrot:
         gap_levels = cruise_gap_levels(self.params.get_int("CruiseGapLevels"), longitudinalPersonalityMax)
         if not self.CP.openpilotLongitudinalControl:
           gap_levels = longitudinalPersonalityMax
-        if CS.pcmCruiseGap == 0 or gap_levels < longitudinalPersonalityMax:
+        if remote == 'gapAdjustCruise' or CS.pcmCruiseGap == 0 or gap_levels < longitudinalPersonalityMax:
           personality = next_gap_personality(self.params.get_int('LongitudinalPersonality'), gap_levels)
         else:
           personality = int(np.clip(CS.pcmCruiseGap - 1, 0, longitudinalPersonalityMax - 1))
@@ -719,7 +745,14 @@ class VCruiseCarrot:
         #self.params.put_bool_nonblocking("ExperimentalMode", not self.params.get_bool("ExperimentalMode"))
         self._add_log("Lateral " + "enabled" if self._lat_enabled else "disabled")
 
-    if self._paddle_mode > 0 and button_type in [ButtonType.paddleLeft, ButtonType.paddleRight]:  # paddle button
+    if remote == 'carrotCruise':
+      # Same acceleration-limiting mode as LFA mode 2 / paddle mode 3.
+      # Repeated requests keep the mode on; RES/+ retains its existing exit path.
+      self.carrot_cruise_active = True
+    elif remote == 'paddleDecel':
+      self._cruise_control(-2, -1, "Cruise off & Ready (Bluetooth paddle)")
+      self._paddle_decel_active = True
+    elif self._paddle_mode > 0 and button_type in [ButtonType.paddleLeft, ButtonType.paddleRight]:  # paddle button
       if self._paddle_mode == 3:
         self.carrot_cruise_active = True
       else:
@@ -730,7 +763,17 @@ class VCruiseCarrot:
       if not CC.enabled:
         self._cruise_control(1, -1, "Cruise on (paddle decel)")
 
-    v_cruise_kph = self._update_cruise_state(CS, CC, v_cruise_kph)
+    updated_speed = self._update_cruise_state(CS, CC, v_cruise_kph)
+    # Keep automatic engagement/disengagement checks, but let an explicit SET/RES
+    # own the speed selected on this frame (e.g. simultaneous pedal release).
+    if button_type not in (ButtonType.setCruise, ButtonType.resumeCruise):
+      v_cruise_kph = updated_speed
+    if remote in ('cancel', 'cancelLong'):
+      self._cruise_control(BLUETOOTH_CANCEL, -1, 'Cruise off (Bluetooth cancel)', allow_cancel_state=True, manual=True)
+    elif remote_enable and not CS.brakePressed and not CS.gasPressed and self._activate_cruise >= 0:
+      self._cruise_control(1, -1, 'Cruise on (Bluetooth button)', manual=True)
+      if self._activate_cruise > 0:
+        self._lat_enabled = True
     return v_cruise_kph
 
   ## desiredSpeed :
@@ -790,7 +833,9 @@ class VCruiseCarrot:
     self.nRoadLimitSpeed_last = self.nRoadLimitSpeed
     return v_cruise_kph
 
-  def _cruise_control(self, enable, cancel_timer, reason, allow_cancel_state=False):
+  def _cruise_control(self, enable, cancel_timer, reason, allow_cancel_state=False, manual=False):
+    # Explicit HID button requests bypass automatic-engage preferences only;
+    # availability/interlocks below and selfdrived's normal no-entry checks remain.
     if enable > 0 and not self._cruise_available:
       self._activate_cruise = 0
       self._add_log(reason + " > Cruise unavailable")
@@ -809,11 +854,11 @@ class VCruiseCarrot:
       enable = 0
       self._add_log(reason + " > Canceled")
     else:
-      if self.autoCruiseControl == 0 and enable != 0:
+      if not manual and self.autoCruiseControl == 0 and enable != 0:
         enable = 0
         self._soft_hold_active = 0
         return
-      if self.autoCruiseControl_cancel_timer > 0 and enable != 0:
+      if not manual and self.autoCruiseControl_cancel_timer > 0 and enable != 0:
         self._add_log(reason + " > timer Canceled")
         enable = 0
         self._soft_hold_active = 0

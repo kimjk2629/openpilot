@@ -4,6 +4,17 @@ This directory maintains the deployed `carrot-route-vault` service, including
 its existing upload receiver, route sharing, video player, and model downloads.
 The older standalone receiver remains under `tools/carrot_upload_server`.
 
+Jetson SD images are separate from model downloads. Publish only pristine,
+verified artifacts under `<storage_root>/downloads/jetson/<version>/`.
+`GET/HEAD /downloads/jetson/<version>/<filename>` supports Range/resume through
+FileResponse and allows only `carrot-jetson.img.zst`, `carrot-jetson-windows.zip`, `release.json`, and
+`SHA256SUMS`. Versions use `vX.Y.Z` with an optional prerelease suffix. Files or
+directories that are symlinks are rejected, and directory browsing is absent.
+Copy large artifacts to a non-allowlisted temporary name, verify their SHA256,
+then rename on the NAS. Never put provisioned cards, settings or keys here.
+Installation instructions live in `ajouatom/carrot-jetson`; this endpoint does
+not promote candidate images to validated releases or change model updates.
+
 Every shared or direct upload-result page automatically loads the selected
 segment into a browser radar reviewer. Its server-side JSON adapter uses
 `ProductionDPathSelector`, the same production controller replay as the desktop
@@ -12,7 +23,13 @@ and recalculated Lead 1/2, per-track dPath diagnostics, and a lead-distance grap
 Video and radar share the recorded qcamera timing; when timing or video is
 unavailable, the radar timeline operates independently and says so explicitly.
 The web replay sensitivity is fixed to 3, including requests with an old sensitivity
-query parameter. The browser source control only changes replay analysis. A single
+query parameter. The browser source control only changes replay analysis. The
+front-radar orientation selector offers recorded/normal/inverted coordinates for
+analysis only; it never changes the vehicle setting or recorded lead decisions.
+New liveTracks messages mark applied `RadarTrackFlip`, so replay preserves logged
+orientation by default and explicit overrides never invert a corrected log twice.
+The override changes front-track lateral position and velocity before selection;
+SCC, corner radar and vision retain their own coordinates. A single
 playback bar spans the video and radar panels, followed by a full-width distance/speed
 and acceleration graph using the desktop reviewer's continuity series.
 Clicking anywhere in the camera, radar or lower graph panels toggles playback and

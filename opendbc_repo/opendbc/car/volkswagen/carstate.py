@@ -49,12 +49,9 @@ class CarState(CarStateBase):
     return fault
 
   def update_button_enable(self, buttonEvents: list[structs.CarState.ButtonEvent]):
-    if not self.CP.pcmCruise:
-      for b in buttonEvents:
-        # Enable OP long on falling edge of enable buttons
-        if b.type in (ButtonType.setCruise, ButtonType.resumeCruise) and not b.pressed:
-          return True
-    return False
+    # Only physical SET/RES releases enable OP long, matching Panda's CAN checks.
+    return not self.CP.pcmCruise and any(
+      b.type in (ButtonType.setCruise, ButtonType.resumeCruise) and not b.pressed for b in buttonEvents)
 
   def create_button_events(self, pt_cp, buttons):
     button_events = []

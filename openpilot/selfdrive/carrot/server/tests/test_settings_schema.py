@@ -391,7 +391,6 @@ def test_external_hud_brightness_and_orientation_use_catalog_controls(settings, 
   ]
   assert screen["params"] == [
     "ClusterHudEncoder",
-    "ClusterHudLiveFps",
     "ClusterHudScreenMode",
     "ClusterHudPanelLayout",
     "ClusterHudCameraViewMode",
@@ -442,6 +441,7 @@ def test_carrot_radar_is_fixed_without_mode_or_sensitivity(settings, params):
   radar = next(group for group in vehicle["groups"] if group["id"] == "VEH_RADAR")
   assert radar["params"] == [
     "EnableRadarTracks",
+    "RadarTrackFlip",
     "EnableCornerRadar",
   ]
 

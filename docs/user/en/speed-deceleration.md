@@ -100,6 +100,10 @@ This setting applies only to camera, average-speed-zone, and 30 km/h zone decele
 
 In mode `2`, an accelerator held from before actual deceleration begins does not pre-arm a floor. A new press during actual deceleration is treated as a request to ignore the current event, and the floor rises to the highest speed reached while accelerating. Releasing the pedal does not permit further slowing below that floor during the same event. Braking, stopping, a speed-limit or deceleration-source change, or the end of the event clears it.
 
+On the Kia PV5, a matched camera distance remains active through brief notification pulses only while fresh stock-navigation messages continue to report the same enforcement limit. When enforcement ends, the limit changes, or either message is lost for more than one second, the current and queued camera distances are cleared.
+
+A queued distance alone cannot trigger deceleration, including after the current camera's distance is exhausted. A new valid warning without a newly received matching distance uses the virtual distance below; an unchanged warning for a completed camera cannot restart it. PV5 route departure is not detected independently: cancellation relies on stock navigation ending or changing its enforcement state.
+
 ### `VehicleSpeedCameraDistanceTime`
 
 When the vehicle supplies only an enforcement speed without an exact camera distance, this setting creates a virtual deceleration distance. At a 50 km/h camera, `6.0 s` produces about 300 m and `6.2 s` about 310 m. A live change is applied within about one second.
@@ -243,7 +247,7 @@ There are three distinct sources:
 
 The code divides predicted yaw rate by velocity at the same point to obtain curvature. It divides the 1.9 m/s² reference lateral-acceleration budget by the setting ratio, so a higher factor produces a lower curve target. Predicted future velocity is not used directly as a driving-speed target.
 
-The curve target and remaining path distance determine the speed ceiling at the current position. A distant curve permits a higher approach speed; the ceiling decreases toward the curve target as the vehicle approaches. The calculation reserves time for control response and gradual braking buildup. Release briefly holds the limit and then raises it progressively.
+The curve target and remaining path distance determine the speed ceiling at the current position. A distant curve permits a higher approach speed; the ceiling decreases toward the curve target as the vehicle approaches. The calculation reserves time for control response and gradual braking buildup. When consecutive fresh model paths confirm that the turn is easing, vTurn recovers promptly to the lowest ceiling from roughly the last 0.25 seconds. A tighter curve limit applies immediately; repeated frames or missing model input do not justify fast release. Actual acceleration still follows the existing acceleration and jerk limits.
 
 Slow or invalid model predictions and isolated yaw-rate spikes are excluded. Late or inaccurate curve predictions can still lead to late deceleration.
 

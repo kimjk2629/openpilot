@@ -11,14 +11,18 @@ from openpilot.cereal import log
 import openpilot.cereal.messaging as messaging
 import openpilot.system.sentry as sentry
 from openpilot.common.utils import atomic_write
+from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params, ParamKeyFlag
+from openpilot.common.stopping_params import get_stopping_speed
 from openpilot.common.repo_update import release_boot_lock
 from openpilot.common.text_window import TextWindow
 from openpilot.system.hardware import HARDWARE
 from openpilot.system.manager.camera_config import configure_wide_camera
+from openpilot.selfdrive.monitoring.config import configure_monitoring
 from openpilot.system.manager.helpers import unblock_stdout, write_onroad_params, save_bootlog
 from openpilot.system.manager.process import ensure_running
 from openpilot.system.manager.process_config import managed_processes
+from openpilot.system.manager.update_status import UpdateStatus
 from openpilot.system.athena.registration import register, UNREGISTERED_DONGLE_ID
 from openpilot.common.swaglog import cloudlog, add_file_handler
 from openpilot.system.version import get_build_metadata
@@ -60,10 +64,11 @@ def write_supported_cars_files() -> None:
     except Exception:
       cloudlog.exception(f"failed to write {filename} from opendbc.car.{brand}.values")
 
-def manager_init() -> None:
+def manager_init() -> UpdateStatus:
   save_bootlog()
 
   build_metadata = get_build_metadata()
+  update_status = UpdateStatus(BASEDIR)
 
   params = Params()
   params.clear_all(ParamKeyFlag.CLEAR_ON_MANAGER_START)
@@ -76,12 +81,15 @@ def manager_init() -> None:
   if params.get_bool("RecordFrontLock"):
     params.put_bool("RecordFront", True)
 
+  configure_monitoring(params)
+
   # set unset params to their default value
   for k in params.all_keys():
     default_value = params.get_default_value(k)
     if default_value is not None and params.get(k) is None:
       params.put(k, default_value)
 
+  get_stopping_speed(params, blocking=True)
   configure_wide_camera(params)
 
   # Create folders needed for msgq
@@ -131,6 +139,8 @@ def manager_init() -> None:
   for p in managed_processes.values():
     p.prepare()
 
+  return update_status
+
 
 def manager_cleanup() -> None:
   # send signals to kill all procs
@@ -153,7 +163,7 @@ def read_rss_kb(pid: int) -> int:
     pass
   return 0
 
-def manager_thread() -> None:
+def manager_thread(update_status: UpdateStatus) -> None:
   cloudlog.bind(daemon="manager")
   cloudlog.info("manager start")
   cloudlog.info({"environ": os.environ})
@@ -216,6 +226,8 @@ def manager_thread() -> None:
     # send managerState
     msg = messaging.new_message('managerState', valid=True)
     msg.managerState.processes = [p.get_process_state_msg() for p in managed_processes.values()]
+    # Check in the normal-priority manager, never in the 100 Hz control loop.
+    msg.managerState.rebootRequired = update_status.update(now)
     pm.send('managerState', msg)
 
     # kick AGNOS power monitoring watchdog
@@ -239,7 +251,7 @@ def manager_thread() -> None:
 
 def main() -> None:
   try:
-    manager_init()
+    update_status = manager_init()
     write_supported_cars_files()
   finally:
     release_boot_lock()
@@ -251,7 +263,7 @@ def main() -> None:
   signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(1))
 
   try:
-    manager_thread()
+    manager_thread(update_status)
   except Exception:
     traceback.print_exc()
     sentry.capture_exception()
@@ -289,8 +301,9 @@ if __name__ == "__main__":
     # Show last 3 lines of traceback
     error = traceback.format_exc(-3)
     error = "Manager failed to start\n\n" + error
-    with TextWindow(error) as t:
-      t.wait_for_exit()
+    if os.getenv("CARROT_STARTUP_RECOVERY") != "1":
+      with TextWindow(error) as t:
+        t.wait_for_exit()
 
     raise
 

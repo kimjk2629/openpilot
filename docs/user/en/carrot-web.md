@@ -64,6 +64,10 @@ The following-distance bar and its 25 m label show the current dynamically adjus
 - road video or another supported content type in each area; and
 - swapping the two areas.
 
+A fresh install starts with **Area 1 full screen** in both orientations: Area 1 is **Carrot Vision** and Area 2 is **Carrot Navi**, so the Drive page shows Carrot Vision full screen. Switching to Split divides landscape 70% / 30% and portrait 50% / 50%.
+
+**Default** restores both orientations to **Area 1 full screen** with Area 1 Carrot Vision and Area 2 Carrot Navi.
+
 Unavailable content reports waiting, recovering, unavailable, or unsupported. Changing the web layout does not change vehicle-control behavior.
 
 ### Starting and stopping a screen recording
@@ -102,9 +106,29 @@ See [Understanding Settings](settings.md) for ranges, units, and a safe tuning o
 Tools contains management actions that can immediately change device or repository state.
 Manage `ONNX Lane and BSD Detection` in **Settings → Driving → Steering → ONNX Lane & BSD**, not through a Tools shortcut.
 
+### Jetson connection, IP and temperature
+
+After Jetson integration, the **Tools → eGPU status card** in `carrot-wip` also
+shows a connected Jetson's IP, temperature and current connection/error state,
+even without a previous eGPU connection. Open Carrot Web using the comma IP;
+the Jetson IP displayed inside the card is its management address. Expired
+temperature/address readings are not presented as current values.
+
+A healthy idle installation using the internal model without Jetson is distinct
+from active inference losing its connection, a real error or excessive heat.
+Do not suppress real faults to clear a warning. The eGPU model compilation button
+is unavailable for a Jetson-only installation.
+
+Use the [short Korean installation guide](https://github.com/ajouatom/carrot-jetson/blob/main/docs/INSTALL-WINDOWS-KO.md):
+extract the installer ZIP and run 01, then 02. Image preparation and the USB-C fix are automatic. Wi-Fi settings come from the connected
+comma, so changing its SSID/password does not require removing the SD card.
+The existing P-gear summary display remains intentional. See the guide's preview
+notice for physical validation limits of each installation path.
+
 ### Quick actions
 
 - `Car Select`: choose the vehicle maker and model.
+- For the 2026 electric Staria, select `Hyundai Staria EV 2026`. Its accelerator and gear decoding differs from `Hyundai Staria 2023`; an existing selection is not migrated automatically. Reboot after selecting it, then check gear/pedal indications and CAN errors while parked.
 - `Language`: change the Carrot Web language.
 - `Web Settings`: configure the Drive layout, video, HUD, AR, and other web-only display options.
 - `Info`: view and copy the device type, branch, commit, identifiers, and network information.
