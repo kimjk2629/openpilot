@@ -374,10 +374,10 @@ class CarState(CarStateBase):
       cluster_delta = ret.cruiseState.speedCluster - self._prev_cluster_speed_ms
       cluster_steps = round(cluster_delta / unit_ms)
       if cluster_steps != 0 and abs(cluster_delta - cluster_steps * unit_ms) < unit_ms * 0.3:
+        prev_units = round(self._prev_cluster_speed_ms / unit_ms)
         if abs(cluster_steps) > 1:
           # Fast flick: snap from the pre-flick displayed speed to the next
           # FLICK_SNAP_UNIT boundary in the flick's direction.
-          prev_units = round(self._prev_cluster_speed_ms / unit_ms)
           mod = prev_units % FLICK_SNAP_UNIT
           if cluster_steps > 0:
             target_units = prev_units + (FLICK_SNAP_UNIT - mod)
@@ -387,6 +387,30 @@ class CarState(CarStateBase):
           # Slow single click: target is simply this car's own new displayed value.
           target_units = round(ret.cruiseState.speedCluster / unit_ms)
         pulses_needed = target_units - pending_units
+        # Guard against inverting the click's own direction. pending_units
+        # (from vCruiseKphReal) is only meaningful as "the car's current
+        # cruise set-speed" once openpilot is actually driving longitudinal
+        # (CC.enabled); carstate.py can't see that flag directly, but while
+        # it's false, cruise.py instead keeps v_cruise_kph ratcheted up to
+        # track vEgo continuously (see cruise.py's "not CC.enabled" branches
+        # in _update_cruise_state), completely independent of this car's own
+        # speedCluster, which can sit still for a long time in that window.
+        # The two can end up dozens of km/h apart with no relation to any
+        # scroll click, so a legitimate up-click's pulses_needed can come out
+        # negative (or a down-click's, positive) purely from that unrelated
+        # drift -- confirmed on a real drive log: speedCluster frozen at 95
+        # while pending_units climbed to 111 tracking vEgo pre-engage, then
+        # the driver's first real up-flick (95 -> 105, snapping to 100)
+        # computed pulses_needed = 100 - 111 = -11, an 11-pulse decelCruise
+        # burst on what was actually an increase. Whenever the absolute-gap
+        # correction disagrees in direction with the click itself, trust
+        # only the click's own already-snap-adjusted step size
+        # (target_units - prev_units, e.g. 95 -> 100 = +5) instead of the
+        # stale gap against pending_units -- this still applies the same
+        # snap semantics as the healthy case, just without importing
+        # whatever unrelated drift pending_units had accumulated.
+        if pulses_needed != 0 and (pulses_needed > 0) != (cluster_steps > 0):
+          pulses_needed = target_units - prev_units
         if pulses_needed != 0:
           cluster_bt = ButtonType.accelCruise if pulses_needed > 0 else ButtonType.decelCruise
           self._wheel_button_queue.extend([cluster_bt] * min(abs(pulses_needed), 15))
