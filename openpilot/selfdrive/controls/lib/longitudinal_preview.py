@@ -15,6 +15,16 @@ LEAD_ACCEL_DEADBAND = 0.10
 EGO_ACCEL_LIMIT = 3.0
 PREVIEW_DECEL_ATTACK_STEP_S = 0.08
 PREVIEW_RELEASE_STEP_S = 0.03
+
+# Minimum vision-model lead confidence required to arm the early-deceleration
+# preview for a lead that radar has not confirmed (radarless platforms never
+# set lead.radar/radarTrackId, so without this the preview never activates).
+# Chosen higher than radar_motion's VISION_LEAD_MIN_PROB (0.40, the bar for
+# accepting a vision lead as the tracked lead at all) because this gates an
+# actuation preview rather than mere lead selection, and lower than the 0.9
+# bar long_mpc uses for FCW's crash counter, since the preview's effect is
+# bounded (<=1.5s of preview) and ramped in smoothly, not a hard alert.
+VISION_LEAD_PREVIEW_MIN_PROB = 0.60
 LEAD_ACCEL_RESPONSE_MIN = 0
 LEAD_ACCEL_RESPONSE_MAX = 5
 LEAD_ACCEL_CRUISE_RESPONSE_MIN = 3
