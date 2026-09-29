@@ -326,7 +326,7 @@
               "zh": "停车与再起步",
               "params": [
                 "StopDistanceCarrot",
-                "StoppingAccel",
+                "ComfortBrake",
                 "VEgoStopping",
                 "AChangeCostStarting"
               ]
@@ -371,7 +371,6 @@
               "zh": "Carrot巡航",
               "params": [
                 "CruiseEcoControl",
-                "CruiseCoastingPercent",
                 "CarrotCruiseDecel",
                 "CarrotCruiseAtcDecel"
               ]
@@ -415,7 +414,6 @@
           "zh": "雷达",
           "params": [
             "EnableRadarTracks",
-            "RadarTrackFlip",
             "EnableCornerRadar"
           ]
         },
@@ -425,8 +423,7 @@
           "en": "Driver Monitor",
           "zh": "驾驶员监控",
           "params": [
-            "DriverMonitoringMode",
-            "CarrotVisionEnabled",
+            "DisableDM",
             "MuteDoor",
             "MuteSeatbelt"
           ]
@@ -529,6 +526,7 @@
               "zh": "画面·摄像头",
               "params": [
                 "ClusterHudEncoder",
+                "ClusterHudLiveFps",
                 "ClusterHudScreenMode",
                 "ClusterHudPanelLayout",
                 "ClusterHudCameraViewMode"
@@ -551,6 +549,8 @@
               "en": "Performance & Debug",
               "zh": "性能·调试",
               "params": [
+                "ClusterHudCoreMode",
+                "ClusterHudPriority",
                 "ClusterHudDebug"
               ]
             }
@@ -1041,23 +1041,6 @@
     },
     {
       "group": "크루즈",
-      "name": "CruiseCoastingPercent",
-      "title": "크루즈 코스팅 여유",
-      "descr": "0%는 기존 제어를 유지합니다. 설정속도 초과 구간에서 크루즈 감속만 완화하고, 여유 상한에 가까워지면 감속을 복원합니다. 설정속도를 높이거나 SCC를 끄지 않습니다. 앞차·정지·외부 속도제어가 없는 일반 크루즈에서만 적용됩니다.",
-      "egroup": "CRUISE",
-      "etitle": "Cruise Coasting Margin",
-      "edescr": "0% keeps existing control. Relaxes cruise braking above the set speed and restores it near the margin ceiling, without raising the set speed or disabling SCC. Applies only to ordinary cruise without leads, stopping, or external speed control.",
-      "cgroup": "巡航设置",
-      "ctitle": "巡航滑行余量",
-      "cdescr": "0%保持原有控制。在超过设定速度时减弱巡航减速，接近余量上限时恢复减速。不提高设定速度，也不关闭SCC。仅在无前车、停车或外部速度控制介入的普通巡航中生效。",
-      "min": 0,
-      "max": 10,
-      "default": 0,
-      "unit": 1,
-      "display_unit": "percent"
-    },
-    {
-      "group": "크루즈",
       "name": "CarrotCruiseDecel",
       "title": "당근크루즈감속도x0.01(-1)",
       "descr": "당근크루즈 감속도 지정\n -1:크루즈OFF",
@@ -1252,6 +1235,22 @@
     },
     {
       "group": "주행튜닝",
+      "name": "ComfortBrake",
+      "title": "ComfortBrake: 제동거리계수x0.01(240)",
+      "descr": "목표 안전거리 계산에서 내 차·선행차의 제동거리 항에 쓰이는 감속 계수입니다(저장값 ÷ 100 = m/s²). 작을수록 같은 속도에서 제동거리 항이 커져 평소에도 더 멀리서·여유 있게 감속을 시작하고, 크면 더 가까이 접근한 뒤 감속합니다. 최종 정지 차간은 StopDistanceCarrot이 별도로 결정하며, 주행 모드(에코·안전)의 배율이 이 값 위에 곱해집니다.",
+      "egroup": "LONG",
+      "etitle": "ComfortBrake: Braking-distance factor x0.01(240)",
+      "edescr": "Deceleration factor (stored value / 100 = m/s^2) used for both my car's and the lead's braking-distance terms when computing the target safe distance. Lower values make that term larger at the same speed, so braking starts earlier and more gently in everyday driving; higher values allow a closer approach before braking. The final stopped gap is still set separately by StopDistanceCarrot, and driving-mode multipliers (Eco/Safe) apply on top of this value.",
+      "cgroup": "纵向控制",
+      "ctitle": "ComfortBrake: 制动距离系数x0.01(240)",
+      "cdescr": "用于目标安全距离计算中，本车与前车制动距离项的减速系数(存储值 ÷ 100 = m/s²)。数值越小，同速度下该项越大，日常也会更早、更从容地开始减速；数值越大则会更靠近后才减速。最终停车车距仍由StopDistanceCarrot单独决定，节能/安全驾驶模式的倍率会在此值基础上相乘。",
+      "min": 150,
+      "max": 300,
+      "default": 240,
+      "unit": 5
+    },
+    {
+      "group": "주행튜닝",
       "name": "AChangeCostStarting",
       "title": "AChangeCostStarting",
       "descr": "출발가속도제한, 0:빠른가속도",
@@ -1360,14 +1359,14 @@
       "group": "주행튜닝",
       "name": "VEgoStopping",
       "title": "정지출발민감도(50)x0.01",
-      "descr": "계획 속도를 기준으로 정지 진입과 재출발을 판단합니다. 낮추면 정지 판단이 늦어지고 출발 시 정지 상태가 더 빨리 풀릴 수 있습니다. 최저값은 10(0.10m/s)이며, 기존에 10 미만으로 저장된 값도 자동으로 10으로 올립니다.",
+      "descr": "값이 낮을수록 빠르게 출발함\n 너무낮추면 추돌위험이 있을수 있음\n (5 권장)",
       "egroup": "LONG",
       "etitle": "VEgoStopping(50)x0.01",
-      "edescr": "Uses planned speeds to determine stop entry and departure. Lower values delay stop recognition and may release stop state sooner on departure. The minimum is 10 (0.10 m/s); previously stored values below 10 are automatically raised to 10.",
+      "edescr": "Lower values result in quicker starts; setting too low may increase collision risk. (5 recommended)",
       "cgroup": "纵向控制",
       "ctitle": "停止/启动灵敏度(50)x0.01",
-      "cdescr": "根据规划速度判断停车与起步。降低数值会推迟停车判断，并可能更早解除停车状态。最低值为10（0.10m/s），此前保存的小于10的值也会自动提高到10。",
-      "min": 10,
+      "cdescr": "值越低起步越快；设置过低可能会增加碰撞风险 (推荐 5)",
+      "min": 1,
       "max": 100,
       "default": 50,
       "unit": 5
@@ -1964,66 +1963,19 @@
     },
     {
       "group": "시작",
-      "name": "DriverMonitoringMode",
-      "title": "운전자 감시 모드",
-      "descr": "0: 기본, 1: 실험 모드. 실험 모드는 법규에 위배될 수 있으므로 통제된 시험 환경에서만 사용하세요. 카메라 없는 기본 감시는 15/30/45초이며, 실험 모드는 관측 가능한 빈 직선도로에서 30/60/90초로 늘립니다. 주변 이동 차량이 없다가 처음 확인될 때만 20초간 기본 모드 기준으로 감시합니다. 차량 추가나 지속 관측으로 연장하지 않으며 이후 실험 감시로 복귀합니다. 이 구간에는 카메라 조작 유예·전방주시 강제 초기화·검출 완화를 적용하지 않고 이전 유예도 종료합니다. 카메라 있는 0은 콤마 순정입니다. 카메라 있는 1은 10/16/26초, 빈 도로에서는 20/32/52초이며 고개 방향 허용 폭을 20% 늘립니다. 운전자·BT 조작은 감시시간을 초기화하고 카메라 경고를 45초 또는 90초 유예한 뒤 카메라 감시를 시작합니다. 유예는 졸음·눈 감김·휴대전화 경고도 지연합니다. 뚜렷한 전방주시가 2초 유지되면 카메라 감시시간을 초기화합니다. 최고 경고·재사용 제한은 조작으로 해제하지 않습니다. 카메라 고장은 자동으로 조작 감시로 전환합니다. 0도 법적 인증을 보장하지 않습니다. 모드 변경은 재부팅 없이 약 0.5초 주기로 적용됩니다. 전환해도 누적 감시시간·경고 횟수·재사용 제한은 초기화되지 않으며, 이전 조작 유예와 전방주시 연속 판정은 종료됩니다. 현대·기아·제네시스 CAN-FD에서 차종명 제한 없이 수신 형식·체크섬·카운터·최신성이 검증된 원본 STEER_TOUCH_2AF 터치는 카메라 불가 시 접촉 중 감시시간을 초기화하며, 카메라 정상·1번은 새 접촉만 조작으로 인정합니다. 카메라 정상·0번은 그대로입니다. 공통 예외: 카메라 유무와 0·1번 모두 P단·완전 정차·인게이지 해제가 유효한 신호로 1초간 확인되면 누적 경고와 재사용 제한을 초기화합니다. 속도 0이나 OFF/ON만으로는 해제하지 않으며 재인게이지는 수동입니다.",
+      "name": "DisableDM",
+      "title": "DisableDM",
+      "descr": "1.DisableDM, 2: +EnableWebRTC, reboot required",
       "egroup": "START",
-      "etitle": "Driver Monitoring Mode",
-      "edescr": "0: Standard; 1: Experimental. Experimental mode may violate law; use only in controlled tests. Without a camera, base alerts are 15/30/45 seconds; experimental mode uses 30/60/90 on a verified empty straight road. Only the transition from no moving traffic to confirmed moving traffic starts 20 seconds of standard monitoring. Additional or continuously observed vehicles do not extend it; experimental monitoring resumes afterwards. During the hold, camera interaction grace, special forward-attention resets and detection relaxation are suspended, and previous grace ends. Camera mode 0 retains comma behavior. Camera mode 1 uses 10/16/26 seconds, or 20/32/52 on an empty road, with 20% wider head-pose tolerance. Driver/BT input resets monitoring and defers camera warnings for 45 or 90 seconds before camera monitoring starts. This also delays sleep, eye-closure and phone warnings. Two seconds of confident forward attention resets camera monitoring. Input cannot clear terminal alerts or lockout. Camera faults automatically select interaction monitoring. Mode 0 is not legal certification. Mode changes apply live at roughly half-second intervals without rebooting. Switching preserves accumulated monitoring time, warning counts and lockout, and ends the previous interaction grace and forward-attention streak. Original STEER_TOUCH_2AF input on Hyundai/Kia/Genesis CAN-FD, validated for layout, checksum, counter and freshness without a vehicle-name whitelist, resets interaction timing while held when camera monitoring is unavailable; healthy-camera mode 1 counts only a new contact. Healthy-camera mode 0 stays stock. Shared exception: in both modes with or without a camera, one continuous second of valid Park, standstill and disengaged status resets accumulated warnings and lockout. Zero speed or engagement OFF/ON alone cannot release it; re-engagement is manual.",
+      "etitle": "DisableDM",
+      "edescr": "1.DisableDM, 2: +EnableWebRTC, Reboot required",
       "cgroup": "启动设置",
-      "ctitle": "驾驶员监控模式",
-      "cdescr": "0：标准；1：实验。实验模式可能违反法规，仅限受控测试。无摄像头时基础警告为15/30/45秒；实验模式在确认的空旷直道上为30/60/90秒。周围从无移动车辆变为首次确认有移动车辆时，才启用20秒标准监测。持续观测或新增车辆不会延长，之后恢复实验监测。此期间停止摄像头操作宽限、特殊前方注视重置和检测放宽，并结束此前宽限。有摄像头的0模式保留comma行为；1模式为10/16/26秒，空旷道路为20/32/52秒，头部姿态容差增加20%。驾驶员或蓝牙按键操作重置计时，推迟摄像头警告45或90秒后开始摄像头监控；这也会延迟困倦、闭眼和手机警告。连续2秒明确注视前方可重置摄像头计时。操作不能解除最高警告或锁定。摄像头故障自动切换为操作监控。标准模式不保证合法认证。模式更改无需重启，约每0.5秒实时应用。切换保留累计监控时间、警告次数和锁定，并结束此前的操作宽限及连续前方注视判定。 现代/起亚/捷尼赛思CAN-FD中不按车型名称限制、通过格式、校验和、计数器及新鲜度验证的原始STEER_TOUCH_2AF触摸在摄像头不可用时持续重置操作计时；摄像头正常的1模式仅将新接触视为操作，0模式保持原样。 共同例外：无论摄像头是否可用，两种模式均在有效信号持续确认P挡、完全静止及辅助驾驶解除1秒后重置累计警告和锁定。仅零速或关闭再开启不能解除，必须手动重新启用。",
+      "ctitle": "禁用驾驶员监控",
+      "cdescr": "1. 禁用 DM, 2: + 开启 WebRTC, 需要重启",
       "min": 0,
-      "max": 1,
+      "max": 2,
       "default": 0,
-      "unit": 1,
-      "control": "select",
-      "options": {
-        "ko": [
-          "기본",
-          "실험 모드 (시험 전용)"
-        ],
-        "en": [
-          "Standard",
-          "Experimental (testing only)"
-        ],
-        "zh": [
-          "标准",
-          "实验（仅供测试）"
-        ]
-      },
-      "risk": "high"
-    },
-    {
-      "group": "시작",
-      "name": "CarrotVisionEnabled",
-      "title": "Carrot Vision 사용",
-      "descr": "웹 도로 영상 스트리밍을 활성화합니다. 운전자 감시와 독립적으로 동작합니다. USB 계기판 사용 중에는 Carrot Vision을 사용할 수 없습니다.",
-      "egroup": "START",
-      "etitle": "Enable Carrot Vision",
-      "edescr": "Enables web road-camera streaming independently of driver monitoring. Carrot Vision is unavailable while the USB cluster is enabled.",
-      "cgroup": "启动设置",
-      "ctitle": "启用 Carrot Vision",
-      "cdescr": "独立于驾驶员监控启用网页道路视频。启用USB仪表盘时无法使用Carrot Vision。",
-      "min": 0,
-      "max": 1,
-      "default": 0,
-      "unit": 1,
-      "control": "select",
-      "options": {
-        "ko": [
-          "끄기",
-          "켜기"
-        ],
-        "en": [
-          "Off",
-          "On"
-        ],
-        "zh": [
-          "关闭",
-          "开启"
-        ]
-      }
+      "unit": 1
     },
     {
       "group": "시작",
@@ -2640,13 +2592,13 @@
       "group": "시작",
       "name": "HyundaiCameraSCC",
       "title": "HYUNDAI: CAMERA SCC",
-      "descr": "1:롱컨차량\n 2:크루즈 상태 동기화\n 3:순정크루즈(CANFD롱컨배선)\n꺼짐 상태에서 카메라 버스 SCC가 감지되면 CAN 오류 시 설정 활성화를 안내합니다. 이미 카메라 SCC가 적용된 차종은 제외합니다.",
+      "descr": "1:롱컨차량\n 2:크루즈 상태 동기화\n 3:순정크루즈(CANFD롱컨배선)",
       "egroup": "START",
       "etitle": "HYUNDAI: CAMERA SCC(0)",
-      "edescr": "1: Long-con Vehicle, 2: Cruise State Sync (CAN-FD Vehicle), 3: Stock Cruise (CANFD Long harness)\nWhen off, SCC detected on the camera bus prompts you to enable this setting during a CAN error. Vehicles already configured for camera SCC are excluded.",
+      "edescr": "1: Long-con Vehicle, 2: Cruise State Sync (CAN-FD Vehicle), 3: Stock Cruise (CANFD Long harness)",
       "cgroup": "启动设置",
       "ctitle": "现代: 摄像头 SCC (0)",
-      "cdescr": "1: 纵向控制车辆, 2: 巡航状态同步 (CAN-FD 车辆), 3: 原厂巡航 (CANFD 纵向线束)\n关闭时，若在摄像头总线上检测到 SCC，发生 CAN 错误时会提示启用此设置。已配置摄像头 SCC 的车型除外。",
+      "cdescr": "1: 纵向控制车辆, 2: 巡航状态同步 (CAN-FD 车辆), 3: 原厂巡航 (CANFD 纵向线束)",
       "min": 0,
       "max": 3,
       "default": 0,
@@ -2736,29 +2688,6 @@
     },
     {
       "group": "레이더설정",
-      "name": "RadarTrackFlip",
-      "title": "레이더 좌우 반전",
-      "descr": "전방 레이더 트랙의 좌우 방향을 보정합니다.\n0: 정상(기본값)\n1: 좌우 위치와 횡속도 반전\nSCC·코너레이더·비전에는 적용하지 않습니다. 선행차 선택과 레이더 표시 모두에 적용됩니다. 차종별 자동 반전은 없으며, 실제 좌우 불일치를 확인한 차량에서만 선택하세요. 변경 후 차량을 재시동하거나 기기를 재부팅하세요.",
-      "egroup": "RADAR",
-      "etitle": "Radar Left/Right Inversion",
-      "edescr": "Corrects the lateral orientation of front radar tracks.\n0: Normal (default)\n1: Invert lateral position and velocity\nDoes not apply to SCC, corner radar or vision. Affects both lead selection and radar display. No vehicle is inverted automatically; select only after confirming a left/right mismatch. Restart the vehicle or reboot the device after changing this setting.",
-      "cgroup": "雷达设置",
-      "ctitle": "雷达左右反转",
-      "cdescr": "校正前雷达轨迹的左右方向。\n0：正常（默认）\n1：反转横向位置和横向速度\n不适用于 SCC、角雷达或视觉。同时影响前车选择和雷达显示。不按车型自动反转；仅在确认左右不一致后选择。更改后请重新启动车辆或设备。",
-      "min": 0,
-      "max": 1,
-      "default": 0,
-      "unit": 1,
-      "control": "select",
-      "options": {
-        "ko": ["정상", "좌우 반전"],
-        "en": ["Normal", "Invert left/right"],
-        "zh": ["正常", "左右反转"]
-      },
-      "risk": "high"
-    },
-    {
-      "group": "레이더설정",
       "name": "EnableCornerRadar",
       "title": "코너레이더 사용(0)",
       "descr": "1:코너레이더활성화,2:끼어드는 차량 검출",
@@ -2823,13 +2752,13 @@
       "group": "시작",
       "name": "SoundVolumeAdjust",
       "title": "사운드볼륨조절(100%)",
-      "descr": "일반 안내음의 음량을 조절합니다. DM 첫 경고음은 최소 70%, 마지막 경고음은 항상 100%로 출력되며 볼륨 설정이나 주변 소음에 의해 낮아지지 않습니다.",
+      "descr": "",
       "egroup": "START",
       "etitle": "Sound Volume adjust(100%)",
-      "edescr": "Adjusts general sound volume. The first audible DM warning uses at least 70% gain and the final warning always uses 100%, regardless of volume settings or ambient-noise attenuation.",
+      "edescr": "",
       "cgroup": "启动设置",
       "ctitle": "音量调节 (100%)",
-      "cdescr": "调节一般提示音的音量。DM 首次声音警告的增益至少为 70%，最终警告始终为 100%，不会因音量设置或环境噪声调节而降低。",
+      "cdescr": "",
       "min": 5,
       "max": 200,
       "default": 0,
@@ -3305,22 +3234,6 @@
       "display_unit": "speedKph"
     },
     {
-      "group": "주행튜닝",
-      "name": "StoppingAccel",
-      "title": "정지시작가속도x0.01(-50)",
-      "descr": "정지 제어 진입 가속도와 정지 감속 목표를 조정합니다. -100~-50만 설정할 수 있으며 -50은 -0.50m/s²입니다. 더 음수일수록 감속 목표가 강해집니다. 이미 더 강한 감속은 유지하며, 소프트홀드는 차종별 정지 유지 가속도를 사용합니다. 변경은 주행 중에도 약 1초 안에 반영됩니다.",
-      "egroup": "LONG",
-      "etitle": "StoppingStartAccelx0.01(-50)",
-      "edescr": "Adjust the stop-entry acceleration threshold and stopping target. Only -100 to -50 is allowed; -50 means -0.50 m/s². More negative values request stronger deceleration. Existing stronger braking is retained, and soft hold uses the vehicle-specific hold acceleration. Changes apply within about one second, including while driving.",
-      "cgroup": "纵向控制",
-      "ctitle": "停止起步加速度 x0.01(-50)",
-      "cdescr": "调整停止控制的加速度进入阈值和减速目标。仅可设置-100至-50；-50代表-0.50m/s²。数值越负，减速目标越强。已有更强的制动请求保持不变，软保持使用车型的停车保持加速度。修改约一秒内生效，行驶中也适用。",
-      "min": -100,
-      "max": -50,
-      "default": -50,
-      "unit": 10
-    },
-    {
       "group": "가속설정",
       "name": "MyDrivingMode",
       "title": "드라이브모드:(3)",
@@ -3340,13 +3253,13 @@
       "group": "가속설정",
       "name": "MyDrivingModeAuto",
       "title": "드라이브모드: 자동",
-      "descr": "0:수동, 1:일반↔안전, 2:에코↔안전. 정지차 접근은 빠르게 안전으로 전환하고 지속 서행도 안전으로 판단합니다. 정지 접근이 아닐 때 앞차 가속도가 1.0m/s²를 초과하는 상태가 약 0.5초 이어지면 복귀합니다. 그 외에는 3초간 흐름 회복이나 주행 중 앞차 없는 상태를 확인한 뒤 복귀합니다. 고속은 자동 선택하지 않습니다.",
+      "descr": "0:수동, 1:일반↔안전, 2:에코↔안전. 정지차 접근은 빠르게 안전으로 전환하고 지속 서행도 안전으로 판단합니다. 정지 접근이 아닐 때 앞차 가속도가 1.5m/s²를 초과하는 상태가 약 0.5초 이어지면 복귀합니다. 그 외에는 지속적인 흐름 회복이나 주행 중 앞차 없는 상태를 확인한 뒤 복귀합니다. 고속은 자동 선택하지 않습니다.",
       "egroup": "ACCEL",
       "etitle": "DrivingMode: Auto",
-      "edescr": "0: Manual, 1: Normal↔Safe, 2: Eco↔Safe. Stopping-lead approaches enter Safe promptly; sustained slow following also selects Safe. Outside a stopping approach, lead acceleration above 1.0m/s² for about 0.5 seconds restores the base mode. Otherwise, three seconds of flow recovery or a clear road while moving restores it. High is never selected automatically.",
+      "edescr": "0: Manual, 1: Normal↔Safe, 2: Eco↔Safe. Stopping-lead approaches enter Safe promptly; sustained slow following also selects Safe. Outside a stopping approach, lead acceleration above 1.5m/s² for about 0.5 seconds restores the base mode. Otherwise, sustained flow recovery or a clear road while moving restores it. High is never selected automatically.",
       "cgroup": "加速设置",
       "ctitle": "驾驶模式: 自动",
-      "cdescr": "0:手动，1:普通↔安全，2:节能↔安全。接近停止前车时迅速进入安全模式，持续低速跟车也会进入。不满足停车接近条件时，前车加速度超过1.0m/s²并持续约0.5秒即可返回。否则需确认交通持续恢复3秒或行驶中前方持续无车。不会自动选择高速模式。",
+      "cdescr": "0:手动，1:普通↔安全，2:节能↔安全。接近停止前车时迅速进入安全模式，持续低速跟车也会进入。不满足停车接近条件时，前车加速度超过1.5m/s²并持续约0.5秒即可返回。否则需确认交通持续恢复或行驶中前方持续无车。不会自动选择高速模式。",
       "min": 0,
       "max": 2,
       "default": 0,
@@ -3731,13 +3644,13 @@
       "group": "외부 HUD",
       "name": "ClusterHud",
       "title": "외부 HUD 활성화(0)",
-      "descr": "0: 끄기\n1: TURZX 9.2인치\nUSB 출력은 10 FPS로 고정되며 eGPU 활성 시 5 FPS로 전환됩니다. CPU 배치와 우선순위는 자동 관리합니다.",
+      "descr": "0: 끄기\n1: TURZX 9.2인치",
       "egroup": "CLUSTER HUD",
       "etitle": "External HUD Display(0)",
-      "edescr": "0: Off\n1: TURZX 9.2 inch\nUSB output is fixed at 10 FPS, switching to 5 FPS while the eGPU is active. CPU placement and priority are managed automatically.",
+      "edescr": "0: Off\n1: TURZX 9.2 inch",
       "cgroup": "外部 HUD",
       "ctitle": "外部 HUD 显示(0)",
-      "cdescr": "0: 关闭\n1: TURZX 9.2 英寸\nUSB 输出固定为 10 FPS，eGPU 启用时切换为 5 FPS。CPU 分配和优先级自动管理。",
+      "cdescr": "0: 关闭\n1: TURZX 9.2 英寸",
       "min": 0,
       "max": 1,
       "default": 0,
@@ -3964,6 +3877,22 @@
     },
     {
       "group": "외부 HUD",
+      "name": "ClusterHudLiveFps",
+      "title": "외부 HUD 라이브 FPS 제한(1)",
+      "descr": "0: 무제한(진단용)\n1: 10 FPS(기본)\n2: 20 FPS\n3: 30 FPS\n4: 40 FPS\n5: 50 FPS\n6: 60 FPS",
+      "egroup": "CLUSTER HUD",
+      "etitle": "External HUD Live FPS Limit(1)",
+      "edescr": "0: Uncapped (diagnostic)\n1: 10 FPS (default)\n2: 20 FPS\n3: 30 FPS\n4: 40 FPS\n5: 50 FPS\n6: 60 FPS",
+      "cgroup": "外部 HUD",
+      "ctitle": "外部 HUD 实时 FPS 限制(1)",
+      "cdescr": "0: Uncapped (diagnostic)\n1: 10 FPS (default)\n2: 20 FPS\n3: 30 FPS\n4: 40 FPS\n5: 50 FPS\n6: 60 FPS",
+      "min": 0,
+      "max": 6,
+      "default": 1,
+      "unit": 1
+    },
+    {
+      "group": "외부 HUD",
       "name": "ClusterHudScreenMode",
       "title": "외부 HUD 화면 모드(0)",
       "descr": "-1: 3D 전체화면\n0: 기본(내비/주행 리포트)\n1: 디버그\n2: 디버그(시스템)\n3: 디버그(그래프1)\n4: 디버그(그래프2)\n5: 주행 리포트",
@@ -4057,6 +3986,38 @@
       "min": 0,
       "max": 1,
       "default": 0,
+      "unit": 1
+    },
+    {
+      "group": "외부 HUD",
+      "name": "ClusterHudCoreMode",
+      "title": "외부 HUD CPU 코어 지정(0)",
+      "descr": "0: 1,2,3,4\n1: 모든 코어\n변경 시 클러스터 HUD를 재시작합니다.",
+      "egroup": "CLUSTER HUD",
+      "etitle": "External HUD CPU Core Mode(0)",
+      "edescr": "0: cores 1,2,3,4\n1: all cores\nChanging this restarts the cluster HUD process.",
+      "cgroup": "外部 HUD",
+      "ctitle": "External HUD CPU Core Mode(0)",
+      "cdescr": "0: cores 1,2,3,4\n1: all cores\nChanging this restarts the cluster HUD process.",
+      "min": 0,
+      "max": 1,
+      "default": 0,
+      "unit": 1
+    },
+    {
+      "group": "외부 HUD",
+      "name": "ClusterHudPriority",
+      "title": "외부 HUD 실시간 우선순위(10)",
+      "descr": "1-99\n기본 10\n변경 시 클러스터 HUD를 재시작합니다.",
+      "egroup": "CLUSTER HUD",
+      "etitle": "External HUD Realtime Priority(10)",
+      "edescr": "1-99\nDefault 10\nChanging this restarts the cluster HUD process.",
+      "cgroup": "外部 HUD",
+      "ctitle": "External HUD Realtime Priority(10)",
+      "cdescr": "1-99\nDefault 10\nChanging this restarts the cluster HUD process.",
+      "min": 1,
+      "max": 99,
+      "default": 10,
       "unit": 1
     },
     {
