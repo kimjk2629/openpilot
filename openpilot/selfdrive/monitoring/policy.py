@@ -32,7 +32,7 @@ class DRIVER_MONITOR_SETTINGS:
     self._WHEELTOUCH_POLICY_ALERT_3_TIMEOUT = 25.
     self._VISION_POLICY_ALERT_1_TIMEOUT = 5.
     self._VISION_POLICY_ALERT_2_TIMEOUT = 8.
-    self._VISION_POLICY_ALERT_3_TIMEOUT = 13.
+    self._VISION_POLICY_ALERT_3_TIMEOUT = 60.
 
     # no response = alert_3 sustained for certain amount of time
     self._NO_RESPONSE_TIMEOUT = 5.
