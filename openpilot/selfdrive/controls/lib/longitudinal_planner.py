@@ -20,6 +20,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_preview import (
   clip_preview_offset,
   get_lead_preview_request,
   rate_limit_preview,
+  VISION_LEAD_PREVIEW_MIN_PROB,
 )
 from openpilot.selfdrive.controls.lib.turn_accel import get_future_curvature, limit_accel_in_turns
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -307,8 +308,10 @@ class LongitudinalPlanner:
       lead_status=(
         preview_enabled
         and lead.status
-        and lead.radar
-        and lead.radarTrackId >= 0
+        and (
+          (lead.radar and lead.radarTrackId >= 0)
+          or lead.modelProb >= VISION_LEAD_PREVIEW_MIN_PROB
+        )
       ),
       a_lead=lead.aLeadK,
       a_ego=sm['carState'].aEgo,
