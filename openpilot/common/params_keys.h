@@ -257,6 +257,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     {"StopDistanceCarrot", {PERSISTENT, INT, "550"}},
     {"ComfortBrake", {PERSISTENT, INT, "240"}},
+    {"DriverMonitoringMode", {PERSISTENT, INT, "0"}},
+    {"CarrotVisionEnabled", {PERSISTENT, BOOL, "0"}},
+    {"CruiseCoastingPercent", {PERSISTENT, INT, "0"}},
+    {"HyundaiCameraSccHint", {PERSISTENT, BOOL, "0"}},
+    {"StoppingAccel", {PERSISTENT, INT, "-50"}},
     {"CruiseButtonMode", {PERSISTENT, INT, "0"}},
     {"CancelButtonMode", {PERSISTENT, INT, "0"}},
     {"LfaButtonMode", {PERSISTENT, INT, "0"}},
