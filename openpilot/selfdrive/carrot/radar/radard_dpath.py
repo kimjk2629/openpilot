@@ -10,7 +10,6 @@ from openpilot.cereal import car, log, messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import Priority, config_realtime_process
 from openpilot.common.runtime_diagnostics import RuntimeDiagnostics
-from openpilot.selfdrive.carrot.radar_motion.native import BACKEND as MOTION_BACKEND
 from openpilot.common.swaglog import cloudlog
 from opendbc.car.hyundai.values import HyundaiExtFlags
 from openpilot.selfdrive.carrot.radar import effective_radar_track_mode
@@ -158,11 +157,21 @@ def main() -> None:
   )
   cloudlog.info("dPath radard got CarParams")
 
+  # This is a vision-primary radar: leads come from modelV2, with liveTracks
+  # used only to refine them when real radar points are actually available.
+  # On a car with no radar hardware (radarUnavailable), card.py's RadarInterface
+  # never has real points to publish, so liveTracks must not be required for
+  # sm.all_checks() -- otherwise radarState.valid falls permanently to False
+  # once the SubMaster's initial no-message grace period elapses (~60s), which
+  # blocks cruise engagement with a permanent "radar fault" alert even though
+  # nothing is actually broken. Cars that do have radar keep the strict check,
+  # so a genuine liveTracks dropout there still surfaces as a radar fault.
+  optional_signals = ["livePose"] + (["liveTracks"] if CP.radarUnavailable else [])
   sm = messaging.SubMaster(
     ["modelV2", "carState", "liveTracks", "livePose"],
     poll="modelV2",
-    ignore_alive=["livePose"],
-    ignore_valid=["livePose"],
+    ignore_alive=optional_signals,
+    ignore_valid=optional_signals,
   )
   pm = messaging.PubMaster(["radarState"])
   radar = DPathRadarD(CP)
@@ -174,7 +183,7 @@ def main() -> None:
       start, cpu_start = time.monotonic(), time.thread_time()
       radar.update(sm, sm["liveTracks"])
       radar.publish(pm)
-      diagnostics.record(context={'motion_backend': MOTION_BACKEND}, work_ms=(time.monotonic() - start) * 1000,
+      diagnostics.record(work_ms=(time.monotonic() - start) * 1000,
                          thread_cpu_ms=(time.thread_time() - cpu_start) * 1000,
                          model_age_ms=(start - sm.logMonoTime['modelV2'] * 1e-9) * 1000,
                          tracks_age_ms=(start - sm.logMonoTime['liveTracks'] * 1e-9) * 1000)
