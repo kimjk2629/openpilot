@@ -63,6 +63,46 @@ class CarState(CarStateBase):
     self._tesla_speed_resume_down_nanos = 0
     self._tesla_speed_resume_wait_idle = False
 
+    # Queue of accelCruise/decelCruise button pulses generated from manual
+    # scroll-wheel ticks (see observe_speed_wheel_frame), so the physical
+    # wheel can drive openpilot's own v_cruise the same way a stalk +/-
+    # button does on other cars. Each tick becomes one pressed=True event
+    # immediately followed by a pressed=False event on the next update().
+    self._wheel_button_queue: list = []
+    self._wheel_button_release_pending = None
+
+    # Fallback path for harnesses that don't tap CAN bus 1 (the "vehicle"
+    # bus VCLEFT_switchStatus/0x3C2 lives on): observe_speed_wheel_frame()
+    # then never fires, so instead we watch the car's own displayed cruise
+    # set-speed (DI_digitalSpeed, decoded on the party bus everyone has)
+    # for step changes and synthesize the same accelCruise/decelCruise
+    # pulses from those. Gated on UI_warning.scrollWheelPressed (also on
+    # the party bus), a direct mechanical "wheel touched" bit, so this
+    # never fires on the car's own automatic speed-limit-follow set-speed
+    # adjustments, which produce identical-looking clean unit steps
+    # without anyone touching the wheel. See update() below.
+    self._prev_cluster_speed_ms = None
+    self._prev_cluster_enabled = False
+    self._prev_scroll_wheel_pressed = False
+    self._scroll_wheel_grace_frames = 0
+    self._prev_cruise_available = False
+    self._engage_sync_pending = False
+
+    # Every scroll click/flick below computes its target as an ABSOLUTE
+    # display value (this car's own post-click/flick set-speed, or the next
+    # 5-unit snap for a flick) and queues however many pulses close the gap
+    # between that target and the car's actual current v_cruise_kph -- not a
+    # delta relative to the previous display reading. The "actual current"
+    # value comes from CarStateBase.vCruiseKphReal, fed back by card.py from
+    # cruise.py's own output one frame after the fact (see its docstring):
+    # this fork has several v_cruise-adjusting paths besides our own queued
+    # button pulses (auto gas pedal sync, lead-car speed sync, nav/ATC speed
+    # follow), and CarState has no way to predict what any of them will do,
+    # so every click/flick reads the real value fresh instead of trusting a
+    # self-maintained estimate that those other paths could silently drift
+    # out from under. This makes every scroll interaction self-correcting on
+    # every single frame, not just at the next click/flick.
+
   def observe_speed_wheel_frame(self, data: bytes, monotonic_nanos: int) -> None:
     if len(data) != 8 or (data[0] & 0x03) != 1:
       return
@@ -80,6 +120,7 @@ class CarState(CarStateBase):
     signed_tick = raw_tick - 0x40 if raw_tick & 0x20 else raw_tick
     direction = 1 if signed_tick > 0 else -1
     self.tesla_manual_speed_adjustment_counter += 1
+    self._wheel_button_queue.append(ButtonType.accelCruise if direction > 0 else ButtonType.decelCruise)
     opposite_nanos = self._tesla_speed_resume_down_nanos if direction > 0 else self._tesla_speed_resume_up_nanos
     if opposite_nanos and monotonic_nanos - opposite_nanos <= SPEED_AUTO_RESUME_GESTURE_NS:
       self.tesla_speed_auto_resume_gesture_counter += 1
@@ -92,6 +133,25 @@ class CarState(CarStateBase):
     else:
       self._tesla_speed_resume_down_nanos = monotonic_nanos
       self._tesla_speed_resume_up_nanos = 0
+
+  def drain_wheel_button_events(self) -> list:
+    """Turn queued scroll-wheel ticks into one accelCruise/decelCruise
+    press+release pair per tick, spread across consecutive update() calls.
+    A tick queued this frame is emitted as pressed=True; its pressed=False
+    follow-up is emitted on the very next update() before any further tick
+    in the queue is started, so openpilot's button-edge handling in
+    selfdrive/car/cruise.py sees a clean single step per detent."""
+    if self._wheel_button_release_pending is not None:
+      bt = self._wheel_button_release_pending
+      self._wheel_button_release_pending = None
+      return [structs.CarState.ButtonEvent(type=bt, pressed=False)]
+
+    if self._wheel_button_queue:
+      bt = self._wheel_button_queue.pop(0)
+      self._wheel_button_release_pending = bt
+      return [structs.CarState.ButtonEvent(type=bt, pressed=True)]
+
+    return []
 
   def update_summon_state(self, summon_state: str, cruise_enabled: bool):
     summon_now = summon_state in ("ACTIVE", "COMPLETE", "SELFPARK_STARTED")
@@ -216,6 +276,146 @@ class CarState(CarStateBase):
     ret.cruiseState.speed = max(ret.cruiseState.speedCluster, 1e-3)
     ret.cruiseState.available = cruise_state == "STANDBY" or ret.cruiseState.enabled
     ret.cruiseState.standstill = False  # This needs to be false, since we can resume from stop without sending anything special
+
+    # Engage-time resync: cruise.py resets v_cruise_kph to vEgoCluster
+    # (v_ego_kph_set) on every cruiseState.available rising edge (see
+    # update_v_cruise's "v_cruise_kph = self.v_ego_kph_set"), not to this
+    # car's own remembered cruise set-speed -- so without this, a drive can
+    # start with v_cruise_kph tens of km/h away from what the car's own
+    # display (speedCluster) already shows. One frame after the edge, once
+    # vCruiseKphReal reflects cruise.py's reset (see __init__ comment),
+    # queue however many pulses walk v_cruise_kph from that reset value up
+    # to speedCluster.
+    #
+    # cruiseState.available can flap (STANDBY <-> off) several times in the
+    # first second or two of a drive, e.g. releasing the brake before the
+    # accelerator is pressed, well before the driver ever presses SET -- and
+    # cruise.py's own reset fires on every single one of those edges too,
+    # unconditionally overwriting v_cruise_kph each time. So every new
+    # rising edge drops whatever's still queued/undrained from a previous
+    # one before arming its own fresh resync -- only the last edge before
+    # things settle ever gets to fully drain, matching cruise.py's own
+    # "last reset wins" behavior exactly.
+    unit_ms = CV.KPH_TO_MS if cruise_is_kph else CV.MPH_TO_MS
+    # self.vCruiseKphReal is always in km/h (see its docstring), unlike
+    # speedCluster/_prev_cluster_speed_ms which are in m/s -- so, unlike
+    # those, it has to be converted to m/s first before dividing by unit_ms
+    # to land in the same "display unit count" space as target_units below.
+    # Dividing the raw km/h value by unit_ms directly (as this used to)
+    # inflated it by 1/CV.KPH_TO_MS (~3.6x) on a kph-unit car, making
+    # pending_units always come out far larger than any real target_units
+    # and so pulses_needed always negative -- every click or flick queued
+    # decelCruise regardless of the actual scroll direction.
+    real_v_cruise_units = round(self.vCruiseKphReal * CV.KPH_TO_MS / unit_ms) if self.vCruiseKphReal is not None else None
+    # Local running estimate of v_cruise_kph as pulses are queued this
+    # frame, so an engage resync and a same-frame flick (e.g. the driver is
+    # already mid-scroll right as cruise engages) stack correctly instead of
+    # both computing their pulse counts against the same stale reading. This
+    # is never carried across frames -- next frame starts fresh from
+    # vCruiseKphReal again, so it can't drift the way a persistent estimate
+    # could.
+    pending_units = real_v_cruise_units
+    if self._engage_sync_pending:
+      if pending_units is not None:
+        target_units = round(ret.cruiseState.speedCluster / unit_ms)
+        sync_diff = target_units - pending_units
+        if sync_diff != 0:
+          sync_bt = ButtonType.accelCruise if sync_diff > 0 else ButtonType.decelCruise
+          self._wheel_button_queue.extend([sync_bt] * min(abs(sync_diff), 60))
+          pending_units = target_units
+        self._engage_sync_pending = False
+    if ret.cruiseState.available and not self._prev_cruise_available:
+      # Drop only the not-yet-started queue; leave any single press already
+      # in flight (self._wheel_button_release_pending) alone so its release
+      # still follows -- clearing that too would leave cruise.py's button
+      # timer stuck "pressed" with no matching release until its own
+      # long-press timeout fired and misread it as a held button.
+      self._wheel_button_queue.clear()
+      self._engage_sync_pending = True
+    self._prev_cruise_available = ret.cruiseState.available
+
+    # Fallback scroll-wheel detection (see __init__ comment): when the raw
+    # 0x3C2 frame never arrives (no bus-1 tap), fall back to watching the
+    # car's own cluster set-speed for the same 1-unit (1 km/h or 1 mph)
+    # steps a scroll click produces, and turn each step into a queued
+    # accelCruise/decelCruise pulse. Gated two ways: (1) cruise must have
+    # been enabled for two consecutive frames, so the initial 0 -> set-speed
+    # jump on engagement isn't misread as a huge scroll; (2) a genuine
+    # scrollWheelPressed pulse must have been seen within about the last
+    # second, confirmed against a real drive log to lead every real
+    # scroll-driven speedCluster step by 0.0-0.5s, so automatic
+    # speed-limit-follow adjustments (same clean-step signature, but the
+    # wheel was never touched) are ignored.
+    scroll_wheel_pressed_raw = cp_party.vl["UI_warning"]["scrollWheelPressed"] == 1
+    if scroll_wheel_pressed_raw and not self._prev_scroll_wheel_pressed:
+      self._scroll_wheel_grace_frames = 100  # ~1s at the ~100Hz carState rate
+    elif self._scroll_wheel_grace_frames > 0:
+      self._scroll_wheel_grace_frames -= 1
+    self._prev_scroll_wheel_pressed = scroll_wheel_pressed_raw
+
+    # FLICK_SNAP_UNIT: a fast spin (more than one display unit moving in a
+    # single update) snaps to the next multiple of this many km/h or mph in
+    # the flick's direction -- matching stock Tesla's own scroll wheel, e.g.
+    # 42 -> 45 on an up-flick, the same way this fork's own long-press/VW-
+    # swipe "big step" already snaps to the nearest 10 (see cruise.py
+    # V_CRUISE_DELTA). A single slow click (exactly one unit) still moves
+    # the set speed by exactly one unit, unchanged.
+    #
+    # The target for either case is computed as an ABSOLUTE display value,
+    # then compared against the car's actual current v_cruise_kph (see
+    # __init__ comment, real_v_cruise_units/pending_units above) rather than
+    # queuing "cluster_steps" pulses directly -- so a click/flick also
+    # re-closes any gap that opened since the last frame, instead of only
+    # ever applying a same-size relative nudge on top of whatever
+    # v_cruise_kph happens to be.
+    FLICK_SNAP_UNIT = 5
+    if (self._prev_cluster_enabled and ret.cruiseState.enabled and self._prev_cluster_speed_ms is not None
+        and self._scroll_wheel_grace_frames > 0 and pending_units is not None):
+      cluster_delta = ret.cruiseState.speedCluster - self._prev_cluster_speed_ms
+      cluster_steps = round(cluster_delta / unit_ms)
+      if cluster_steps != 0 and abs(cluster_delta - cluster_steps * unit_ms) < unit_ms * 0.3:
+        prev_units = round(self._prev_cluster_speed_ms / unit_ms)
+        if abs(cluster_steps) > 1:
+          # Fast flick: snap from the pre-flick displayed speed to the next
+          # FLICK_SNAP_UNIT boundary in the flick's direction.
+          mod = prev_units % FLICK_SNAP_UNIT
+          if cluster_steps > 0:
+            target_units = prev_units + (FLICK_SNAP_UNIT - mod)
+          else:
+            target_units = prev_units - (mod if mod != 0 else FLICK_SNAP_UNIT)
+        else:
+          # Slow single click: target is simply this car's own new displayed value.
+          target_units = round(ret.cruiseState.speedCluster / unit_ms)
+        pulses_needed = target_units - pending_units
+        # Guard against inverting the click's own direction. pending_units
+        # (from vCruiseKphReal) is only meaningful as "the car's current
+        # cruise set-speed" once openpilot is actually driving longitudinal
+        # (CC.enabled); carstate.py can't see that flag directly, but while
+        # it's false, cruise.py instead keeps v_cruise_kph ratcheted up to
+        # track vEgo continuously (see cruise.py's "not CC.enabled" branches
+        # in _update_cruise_state), completely independent of this car's own
+        # speedCluster, which can sit still for a long time in that window.
+        # The two can end up dozens of km/h apart with no relation to any
+        # scroll click, so a legitimate up-click's pulses_needed can come out
+        # negative (or a down-click's, positive) purely from that unrelated
+        # drift -- confirmed on a real drive log: speedCluster frozen at 95
+        # while pending_units climbed to 111 tracking vEgo pre-engage, then
+        # the driver's first real up-flick (95 -> 105, snapping to 100)
+        # computed pulses_needed = 100 - 111 = -11, an 11-pulse decelCruise
+        # burst on what was actually an increase. Whenever the absolute-gap
+        # correction disagrees in direction with the click itself, trust
+        # only the click's own already-snap-adjusted step size
+        # (target_units - prev_units, e.g. 95 -> 100 = +5) instead of the
+        # stale gap against pending_units -- this still applies the same
+        # snap semantics as the healthy case, just without importing
+        # whatever unrelated drift pending_units had accumulated.
+        if pulses_needed != 0 and (pulses_needed > 0) != (cluster_steps > 0):
+          pulses_needed = target_units - prev_units
+        if pulses_needed != 0:
+          cluster_bt = ButtonType.accelCruise if pulses_needed > 0 else ButtonType.decelCruise
+          self._wheel_button_queue.extend([cluster_bt] * min(abs(pulses_needed), 15))
+    self._prev_cluster_speed_ms = ret.cruiseState.speedCluster
+    self._prev_cluster_enabled = ret.cruiseState.enabled
     ret.standstill = cp_party.vl["ESP_B"]["ESP_vehicleStandstillSts"] == 1
     ret.accFaulted = cruise_state == "FAULT"
 
@@ -306,7 +506,13 @@ class CarState(CarStateBase):
         else:
           self.suspected_fsd14_clear_frames = 0
 
-    # Buttons # ToDo: add Gap adjust button
+    # Buttons
+    # Manual scroll-wheel ticks (see observe_speed_wheel_frame, fed from the
+    # raw 0x3C2 vehicle-bus frame in interface.py) become accelCruise/
+    # decelCruise button pulses here so the physical wheel actually moves
+    # openpilot's own v_cruise, matching stalk +/- buttons on other cars.
+    ret.buttonEvents = [*ret.buttonEvents, *self.drain_wheel_button_events()]
+    # ToDo: add Gap adjust button
 
     # Messages needed by carcontroller
     self.das_control = copy.copy(cp_ap_party.vl["DAS_control"])
