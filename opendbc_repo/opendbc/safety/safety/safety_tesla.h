@@ -336,10 +336,23 @@ static safety_config tesla_init(uint16_t param) {
   tesla_speed_button_rx_timestamp = 0U;
   tesla_speed_button_last_tx_valid = false;
   tesla_speed_button_last_tx_timestamp = 0U;
-  // we used to assume Summon on startup; instead we tolerate a short
-  // window without TX (DI_state comes at 10 Hz). Panda safety will
-  // reject TX until the first DI_state message clears tesla_summon.
-  tesla_summon = false;
+  // Assume Summon/Autopark may be active on startup/reboot, since DI_state
+  // is a low-frequency message (10 Hz) and we have no real DI_autoparkState
+  // sample yet. This blocks all TX for at most ~100ms until the first real
+  // DI_state message arrives; the RX handler above clears tesla_summon on
+  // that very first message whenever it shows Summon/Autopark isn't
+  // actually active (the overwhelmingly common case), so this costs one
+  // control cycle, not a stuck block.
+  //
+  // We previously defaulted this to false to skip that ~100ms window, but
+  // that meant openpilot could TX to the car before ever seeing a real
+  // DI_state sample -- i.e. before panda safety had any confirmation of the
+  // car's actual state. On this Tesla, rebooting the openpilot device while
+  // the car stays powered on reproducibly left DI_cruiseState latched in
+  // FAULT (requiring a full vehicle power cycle to clear) when TX resumed
+  // this early; defaulting to true (matching upstream) avoids sending any
+  // control messages until the car's own state is confirmed at least once.
+  tesla_summon = true;
   tesla_summon_prev = false;
 
   static RxCheck tesla_model3_y_rx_checks[] = {
